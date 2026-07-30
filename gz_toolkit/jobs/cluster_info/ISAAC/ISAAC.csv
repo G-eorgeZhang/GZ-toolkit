@@ -1,0 +1,4 @@
+partition,qos,account,cores_per_node,max_walltime,key
+campus,campus,ACF-UTK0035,40,24:00:00,c
+short,short,ACF-UTK0035,48,3:00:00,s
+condo-hxu8,condo,ACF-UTK0035,48,30-00:00:00,g

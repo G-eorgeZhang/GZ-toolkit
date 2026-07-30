@@ -1,0 +1,167 @@
+Metadata-Version: 2.4
+Name: GZ-toolkit
+Version: 0.1.0
+Summary: LAMMPS structure manipulation toolkit for building crystals, creating defects, and merging atomistic configurations.
+Author: Zhang
+License: MIT
+Project-URL: Homepage, https://github.com/zhang/GZ-toolkit
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Science/Research
+Classifier: Topic :: Scientific/Engineering :: Chemistry
+Classifier: Topic :: Scientific/Engineering :: Physics
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: numpy
+Requires-Dist: pandas
+Requires-Dist: scipy
+Requires-Dist: pymatgen
+Requires-Dist: mylammps @ git+https://github.com/TaoLiang120/myLAMMPS.git
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: pytest-cov; extra == "dev"
+
+# GZ-toolkit
+
+A LAMMPS structure manipulation toolkit for computational materials science.
+
+`GZ-toolkit` (import name: `gz_toolkit`) provides tools for:
+- **Building crystal structures** — seed perfect unit cells (FCC, BCC, HCP, diamond, rocksalt, zinc blende, wurtzite, fluorite, CsCl) and write LAMMPS data files.
+- **Creating defects** — voids, ⟨111⟩ and ⟨100⟩ dislocation loops (SIA and vacancy), Frenkel pairs, and interstitial insertion.
+- **Merging structures** — carve-and-transplant regions between host/donor configurations with automatic overlap scoring and boundary optimization.
+- **Geometric selection** — select atoms by sphere, cylinder, plane, cube, atom type, coordinates, percentage, or atom/molecule ID — all through a unified `region_mask()` dispatcher.
+- **Coordinate transforms** — symmetry operations and integer supercell transformations.
+
+## Installation
+
+### Prerequisites
+
+`GZ-toolkit` depends on [`myLAMMPS`](https://github.com/TaoLiang120/myLAMMPS.git), a LAMMPS data I/O library. Install it first:
+
+```bash
+pip install git+https://github.com/TaoLiang120/myLAMMPS.git
+```
+
+### Install GZ-toolkit
+
+```bash
+# From the project root
+pip install -e .
+
+# With development dependencies (pytest)
+pip install -e ".[dev]"
+```
+
+### Dependencies
+
+| Package | Purpose |
+|---------|---------|
+| [numpy](https://numpy.org/) | Array operations |
+| [pandas](https://pandas.pydata.org/) | Atom table management |
+| [scipy](https://scipy.org/) | Fast neighbor lookups (KD-trees) |
+| [pymatgen](https://pymatgen.org/) | Crystal structure generation and lattice operations |
+| [myLAMMPS](https://github.com/TaoLiang120/myLAMMPS.git) | LAMMPS data file I/O (`lmpData`, `lmpBox`) |
+
+## Quick Start
+
+### Build a BCC seed crystal
+
+```python
+from gz_toolkit import Gen_crystal
+
+g = Gen_crystal(atom_style="atomic")
+g.seed_crystal("A2", ["Fe", "Fe"], "bcc_seed.data")
+```
+
+### Load and modify a LAMMPS data file
+
+```python
+from gz_toolkit import Modlmp_LmpData
+
+data = Modlmp_LmpData.from_file("my_structure.data", "atomic")
+
+# Select atoms in a sphere
+mask = data.select_sphere(center=[10, 10, 10], radius=5.0)
+print(f"Selected {mask.sum()} atoms")
+
+# Modify atom types in a region
+data.mod_atom_type(
+    "sphere",
+    new_type=2,
+    ff_elements=["Fe", "He"],
+    atomic_masses=[55.845, 4.003],
+    center=[10, 10, 10],
+    radius=5.0,
+)
+
+data.to_file("modified.data")
+```
+
+### Create a void
+
+```python
+from gz_toolkit import Modlmp_LmpData, BCCDefect
+
+data = Modlmp_LmpData.from_file("bcc_supercell.data", "atomic")
+defect = BCCDefect(data)
+n_deleted = defect.void(center=None, radius=8.0, region_type="sphere")
+print(f"Deleted {n_deleted} atoms")
+data.to_file("with_void.data")
+```
+
+### Create dislocation loops
+
+```python
+from gz_toolkit import Modlmp_LmpData, BCCDefect
+
+data = Modlmp_LmpData.from_file("bcc_supercell.data", "atomic")
+defect = BCCDefect(data)
+
+# Interstitial loop
+defect.add_111_loop(
+    center=[57.1, 57.1, 57.1],
+    habit_plane=(1, 1, 1),
+    radius=10.0,
+    lattice_const=2.8553,
+    ff_elements=["Fe", "Fe"],
+    atomic_masses=[55.845, 55.845],
+    loop_type="interstitial",
+    n_layers=1,
+)
+
+data.to_file("with_loop.data")
+```
+
+## Package Structure
+
+```
+gz_toolkit/
+├── __init__.py               # public API (lazy imports)
+├── core/
+│   └── modlmp.py             # Modlmp_LmpData class (selection, add/delete, transform, merge)
+├── buildmtx/
+│   └── buildstr.py           # Gen_crystal: seed crystal structures
+├── defect/
+│   ├── bcc_defect.py         # BCCDefect: void, loops, Frenkel pairs, transforms
+│   └── fcc_defect.py         # FCCDefect (placeholder)
+├── jobs/                     # SLURM job templates, directory + submission helpers
+└── potential_testing/        # potential-testing pipeline (reference → defects → summary)
+
+tests/                        # pytest suite
+examples/                     # usage example scripts
+```
+
+## Running Tests
+
+```bash
+pytest tests/ -v
+```
+
+## License
+
+MIT

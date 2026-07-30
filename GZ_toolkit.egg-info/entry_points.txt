@@ -1,0 +1,2 @@
+[console_scripts]
+gz-toolkit-potential-testing = gz_toolkit.potential_testing.main:main

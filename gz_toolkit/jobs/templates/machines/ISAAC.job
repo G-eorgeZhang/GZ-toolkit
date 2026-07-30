@@ -1,0 +1,20 @@
+#!/bin/bash
+#SBATCH -J {{JOBNAME}}
+#SBATCH -A {{ACCOUNT}}
+#SBATCH -t {{WALLTIME}}
+#SBATCH -N {{NODES}}
+#SBATCH --ntasks={{NTASKS}}
+#SBATCH --ntasks-per-node={{NTASKS_PER_NODE}}
+#SBATCH --partition={{PARTITION}}
+#SBATCH --qos={{QOS}}
+#SBATCH --export=ALL
+
+cd $SLURM_SUBMIT_DIR
+{{MODULE_COMMANDS}}
+
+date
+
+{{ENV_COMMANDS}}
+{{RUN_COMMAND}}
+
+date

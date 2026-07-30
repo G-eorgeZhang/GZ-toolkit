@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "GZ-toolkit"
+version = "0.1.0"
+description = "LAMMPS structure manipulation toolkit for building crystals, creating defects, and merging atomistic configurations."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Zhang" }]
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "pymatgen",
+    "mylammps @ git+https://github.com/TaoLiang120/myLAMMPS.git",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Scientific/Engineering :: Physics",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+[project.urls]
+Homepage = "https://github.com/zhang/GZ-toolkit"
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov"]
+
+[project.scripts]
+gz-toolkit-potential-testing = "gz_toolkit.potential_testing.main:main"
+
+[tool.setuptools.packages.find]
+include = ["gz_toolkit*"]
+
+[tool.setuptools.package-data]
+gz_toolkit = [
+    "jobs/templates/*.job",
+    "jobs/templates/machines/*.job",
+    "jobs/templates/machines/*.txt",
+    "jobs/cluster_info/*.csv",
+    "jobs/cluster_info/*/*.csv",
+    "jobs/cluster_info/*/*.json",
+    "potential_testing/templates/*",
+]
