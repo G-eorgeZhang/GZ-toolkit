@@ -109,6 +109,62 @@ defect.add_111_loop(
 data.to_file("with_loop.data")
 ```
 
+## Simulation Workflow
+
+`gz_toolkit` (mainly through `potential_testing/`) drives a LAMMPS potential-testing
+run in four stages:
+
+```
+1. Create structure          2. Create input file      3. Create + identify        4. Submit
+   (buildmtx / defect)          (MANUAL step)              directory tree              ┌─ (a) Python manager: auto-submit
+                                                             (jobs / potential_testing)  └─ (b) Job files + .sh: manual submit
+```
+
+1. **Create structure** — `Gen_crystal` (`buildmtx/buildstr.py`) seeds a crystal cell;
+   `BCCDefect`/`FCCDefect` (`defect/`) and `structure_ops.py` carve out point defects,
+   dislocation loops, alloys, and gas complexes as LAMMPS data files.
+
+2. **Create the input file — manual** — you supply the interatomic potential
+   (`pot_lines` and any potential files) in `pot_inputs/<pot>.json`. Everything else —
+   `in.reference.lammps`, `in.relax.lammps`, `potential.inc`, etc. — is generated
+   automatically by `potential_testing/pipeline.py`.
+
+3. **Create and identify the directory tree** — `prepare_reference_stage()` and
+   `build_defects_post_reference()` (`potential_testing/pipeline.py`) lay out
+   `<pot>/reference/<element>/`, `<pot>/point_defects/<element>/<case>/`,
+   `<pot>/loops/...`, `<pot>/alloy_lc/...`, `<pot>/gas_complexes/...`, etc.
+   That tree is later re-*identified* (not just built) by:
+   - `DirectoryManager` (`jobs/directory.py`) — generic traversal/filtering of run
+     subdirectories by naming convention (`prefix-suffix`, `flat`, or a custom regex).
+   - `_list_case_dirs()` (`potential_testing/parallel.py`) — walks the
+     `potential_testing`-specific case tree to build job commands.
+   - `collect_status()` (`potential_testing/status.py`) — walks the same tree and
+     classifies each case as `pending` / `running` / `done` / `failed`.
+   - `generate_folder_tree()` (`jobs/tree.py`) — writes a human-readable
+     `folder_tree.txt` snapshot of any directory.
+
+4. **Submit** — controlled by `workflow.paral_degree` in the potential's config:
+   - **(a) Python script as manager (automatic, chained submission)** —
+     `paral_degree = 3` or `4`. `emit_jobs()` / `scatter_cases()`
+     (`potential_testing/parallel.py`) write per-stage or per-case `.job` files
+     *and* call `sbatch` themselves, chaining reference → build-defects → cases →
+     summary with `--dependency=afterok` so the whole pipeline runs unattended
+     once you kick off the first job.
+   - **(b) Job files + shell script (manual submission)** — `paral_degree = 1` or
+     `2`, or `ScatterSubmitter`/`PatchSubmitter` (`jobs/submission.py`). Every
+     `.job` file is written up front alongside one `submit_all.sh`; nothing is
+     auto-submitted — `jobs/submission.py` explicitly never calls `sbatch`, so you
+     review and run `bash submit_all.sh` yourself.
+
+Driven end-to-end via the CLI:
+
+```bash
+python -m gz_toolkit.potential_testing.cli init --root . --pot-name my_pot   # scaffold project
+python -m gz_toolkit.potential_testing.cli run --pot-inputs pot_inputs       # stage 1 + emit jobs
+bash submit_all.sh                                                          # stage 4(b), if paral_degree in (1,2)
+python -m gz_toolkit.potential_testing.cli status --pot-inputs pot_inputs    # check progress anytime
+```
+
 ## Package Structure
 
 ```
