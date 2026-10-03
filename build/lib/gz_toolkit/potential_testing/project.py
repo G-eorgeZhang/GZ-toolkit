@@ -5,6 +5,7 @@ Layout produced by ``init_potential_project``::
     <root>/
     ├── main.py            # one-liner driver
     ├── summarize.py       # one-liner summary
+    ├── check.py           # user-initiated pre-flight check, run before main.py
     ├── pot_inputs/
     │   └── <pot_name>.json
     └── potentials/
@@ -36,14 +37,67 @@ if __name__ == "__main__":
 """
 
 
-DEFAULT_SUMMARY = """\"\"\"Aggregate results from every <pot_name>/ workspace into one CSV.\"\"\"
+DEFAULT_SUMMARY = """\"\"\"Aggregate results from every <pot_name>/ workspace into CSV(s).
 
-from gz_toolkit.potential_testing import summarize_all
+Parses each potential's log.lammps files directly — safe to run any time,
+even while some potentials are still running (unfinished cases just show up
+as blank cells). Independent of <pot_name>.json / `summarize-pot` (that's a
+separate, automatic step for gz_toolkit.pot_infobank — see the manual).
+
+SUMMARY_GROUPS controls how potentials are split across output files:
+  {}                                          -> single summary.csv, everyone
+  {"summary1": ["pot1", "pot2"]}              -> summary1.csv with only those pots
+  {"summary1": [...], "summary2": "rest"}     -> summary1.csv + summary2.csv (everyone else)
+\"\"\"
+
+from gz_toolkit.potential_testing import write_grouped_summaries
+
+SUMMARY_GROUPS: dict[str, list[str] | str] = {}
 
 
 def main() -> None:
-    out = summarize_all(pot_inputs_dir="pot_inputs", run_dir=".")
-    print(f"Summary written to: {out}")
+    out_paths = write_grouped_summaries(pot_inputs_dir="pot_inputs", run_dir=".", groups=SUMMARY_GROUPS)
+    for p in out_paths:
+        print(f"Summary written to: {p}")
+
+
+if __name__ == "__main__":
+    main()
+"""
+
+
+DEFAULT_CHECK = """\"\"\"Sanity-check potential files before running main.py.
+
+User-initiated only — nothing else in the pipeline calls this. Run it by hand
+after editing pot_inputs/*.json and dropping files into potentials/<pot_name>/,
+and again any time you touch either, to catch the usual mistakes: a filename
+in pot_lines that doesn't match potential_files, a potential file listed but
+never copied into potentials/<pot_name>/, or (for MTP) an mlip.ini pointing at
+the wrong .mtp file.
+\"\"\"
+
+from gz_toolkit.potential_testing import check_project
+
+
+def main() -> None:
+    report = check_project(pot_inputs_dir="pot_inputs", run_dir=".")
+    n_errors = 0
+    for pot_name, findings in report.items():
+        print(f"{pot_name}:")
+        if not findings:
+            print("  OK")
+            continue
+        for level, msg in findings:
+            if level == "error":
+                n_errors += 1
+                prefix = "  - "
+            else:
+                prefix = "  [info] "
+            print(prefix + msg.replace("\\n", "\\n    "))
+    if n_errors:
+        print(f"\\n{n_errors} problem(s) found - fix them before running main.py.")
+    else:
+        print("\\nAll potential files check out.")
 
 
 if __name__ == "__main__":
@@ -79,6 +133,46 @@ def default_config(pot_name: str = "tao_2.31") -> PotentialConfig:
     )
 
 
+def write_driver_scripts(
+    root_dir: str | Path = ".",
+    force: bool = False,
+    only: list[str] | None = None,
+) -> list[Path]:
+    """Drop ``main.py`` / ``summarize.py`` / ``check.py`` into ``root_dir``.
+
+    Independent of ``pot_inputs/`` — safe to run against a project whose
+    ``pot_inputs/*.json`` were written by hand (never went through ``init``),
+    to pull in the same driver scripts ``init`` would have created.
+
+    ``force=False`` (default): existing files are left untouched — idempotent,
+    only fills in whatever's missing.
+    ``force=True``: overwrites existing files with the current template too —
+    use this to pull in template updates (e.g. a project scaffolded before
+    ``SUMMARY_GROUPS`` existed in ``summarize.py``). Any hand edits to an
+    overwritten file are lost.
+    ``only``: restrict to a subset of ``{"main.py", "summarize.py", "check.py"}``
+    (default: all three) — e.g. ``only=["summarize.py"]`` to upgrade just that
+    one file without touching a hand-edited ``main.py``/``check.py``.
+
+    Returns the paths actually written.
+    """
+    root = Path(root_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    templates = {
+        "main.py": DEFAULT_MAIN,
+        "summarize.py": DEFAULT_SUMMARY,
+        "check.py": DEFAULT_CHECK,
+    }
+    names = only if only is not None else list(templates)
+    written: list[Path] = []
+    for name in names:
+        path = root / name
+        if force or not path.exists():
+            path.write_text(templates[name], encoding="utf-8")
+            written.append(path)
+    return written
+
+
 def init_potential_project(root_dir: str | Path = ".", pot_name: str = "tao_2.31") -> Path:
     """Create the project skeleton: ``main.py``, ``summarize.py``, ``pot_inputs/``, ``potentials/``.
 
@@ -101,12 +195,6 @@ def init_potential_project(root_dir: str | Path = ".", pot_name: str = "tao_2.31
     if not cfg_path.exists():
         save_potential_config(default_config(pot_name=pot_name), cfg_path)
 
-    # Drivers.
-    main_path = root / "main.py"
-    if not main_path.exists():
-        main_path.write_text(DEFAULT_MAIN, encoding="utf-8")
-    summary_path = root / "summarize.py"
-    if not summary_path.exists():
-        summary_path.write_text(DEFAULT_SUMMARY, encoding="utf-8")
+    write_driver_scripts(root)
 
     return root

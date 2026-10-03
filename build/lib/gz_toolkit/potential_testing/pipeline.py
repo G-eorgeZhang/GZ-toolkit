@@ -7,12 +7,15 @@ The flow per potential::
         # and writes box-relax LAMMPS inputs.
 
     build_defects_post_reference(cfg)
-        # Reads each <pot>/reference/<element>/relaxed.data + log to extract lc/Ecoh,
-        # then builds:
+        # Reads each <pot>/reference/<element>/log.lammps to extract lc/Ecoh
+        # (used only as a scale target -- every case below is built fresh
+        # from a lc=1 seed, see structure_ops.py's module docstring), then builds:
         #   <pot>/point_defects/<element>/<defect>/
         #   <pot>/loops/<element>/<loop>/                  (opt-in, BCC only)
         #   <pot>/disloc_lines/<element>/<line>/           (opt-in, NotImplementedError)
-        #   <pot>/alloy_lc/<A><B>/<A_X_B_Y>/               (opt-in)
+        #   <pot>/alloy_lc/<A><B>/<A_X_B_Y>/               (opt-in; binary scan, two_element_suites)
+        #   <pot>/alloy_lc/<A><B><C>.../<comp_tag>/        (opt-in; fixed N-element point, multi_element_suites)
+        #   <pot>/point_defects_alloy/<pair>/<comp>/rep<k>/<case>/  (opt-in; alloy Ef, replica-averaged)
         #   <pot>/gas_complexes/<metal>-<gas>/<...>/       (opt-in)
         # Each case dir gets structure.data + in.relax.lammps + potential.inc.
 
@@ -32,14 +35,16 @@ import re
 import shutil
 from typing import Any
 
-from gz_toolkit.potential_testing.config import PotentialConfig, expand_gas_pairs
+from gz_toolkit.potential_testing.config import PotentialConfig, expand_gas_pairs, resolve_composition
 from gz_toolkit.potential_testing.elastic import build_elastic_cases
 from gz_toolkit.potential_testing.seakmc_runner import emit_seakmc_inputs, is_seakmc_eligible
 from gz_toolkit.potential_testing.structure_ops import (
     build_alloy_structure,
-    build_case_from_reference,
+    build_case_structure,
     build_gas_complex_structure,
+    build_multi_alloy_structure,
     build_reference_structure,
+    build_single_atom_structure,
     build_single_gas_in_bulk,
 )
 from gz_toolkit.potential_testing.summary import write_summary
@@ -78,7 +83,9 @@ def render_min_input(
 
     box_relax     : add ``fix box/relax iso 0.0`` around the minimize.
     n_replicate   : emit ``variable nrep`` + ``RESULT LC`` (lx / nrep).
-    emit_ecoh     : emit ``RESULT ECOH`` (pe / natoms) — reference runs only.
+    emit_ecoh     : emit ``RESULT ECOH`` (pe / natoms, i.e. energy per atom —
+                    NOT true cohesive energy; combine with the isolated
+                    single-atom run to get E_coh) — reference runs only.
     minimize_tol  : etol and ftol for the minimize command.
     run_zero      : insert ``run 0`` before the minimize (defect relax runs).
 
@@ -121,6 +128,7 @@ def render_min_input(
         "write_data      relaxed.data",
         "",
         "variable        natoms equal atoms",
+        "variable        pe_tot equal pe",
     ]
     if emit_ecoh:
         lines.append("variable        ecoh   equal pe/v_natoms")
@@ -131,7 +139,7 @@ def render_min_input(
         lines.append('print           "RESULT ECOH ${ecoh}"')
     lines += [
         'print           "RESULT NATOMS ${natoms}"',
-        'print           "RESULT PE_TOTAL ${pe}"',
+        'print           "RESULT PE_TOTAL ${pe_tot}"',
         "",
     ]
     return "\n".join(lines)
@@ -155,6 +163,39 @@ def _write_alloy_lc_input(case_dir: Path, n_replicate: int, tol: float = 1.0e-18
     (case_dir / "in.alloy.lammps").write_text(text, encoding="utf-8")
 
 
+def render_single_atom_input() -> str:
+    """One isolated atom, no minimization needed (nothing to relax) — just
+    read the box, compute the potential, and print its energy."""
+    lines = [
+        "units           metal",
+        "dimension       3",
+        "boundary        p p p",
+        "atom_style      atomic",
+        "atom_modify     map array sort 0 0.0",
+        "",
+        "read_data       structure.data",
+        "include         potential.inc",
+        "",
+        "thermo 1",
+        "thermo_style    custom step atoms pe",
+        "",
+        "neighbor        1.0 bin",
+        "neigh_modify    every 1 delay 0 check yes",
+        "",
+        "run             0",
+        "",
+        "variable        pe_single equal pe",
+        'print           "RESULT PE_SINGLE ${pe_single}"',
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _write_single_atom_input(case_dir: Path) -> None:
+    text = render_single_atom_input()
+    (case_dir / "in.single_atom.lammps").write_text(text, encoding="utf-8")
+
+
 # ---------------------------------------------------------------------------
 # Reference reading
 # ---------------------------------------------------------------------------
@@ -175,7 +216,11 @@ def read_reference_lc(reference_dir: Path, default_lc: float) -> float:
         return default_lc
 
 
-def read_reference_ecoh(reference_dir: Path) -> float | None:
+def read_reference_e_per_atom(reference_dir: Path) -> float | None:
+    """Read the ``RESULT ECOH`` line, which is really just ``pe/natoms``
+    (energy per atom of the relaxed bulk cell) — not the true cohesive
+    energy. Combine with :func:`read_reference_single_atom` to get the
+    actual E_coh (see ``read_reference_ecoh``)."""
     logf = reference_dir / "log.lammps"
     if not logf.exists():
         return None
@@ -187,6 +232,34 @@ def read_reference_ecoh(reference_dir: Path) -> float | None:
         return float(m[-1])
     except ValueError:
         return None
+
+
+def read_reference_single_atom(reference_dir: Path) -> float | None:
+    """Read the isolated single-atom energy from ``<reference_dir>/single_atom/log.lammps``."""
+    logf = reference_dir / "single_atom" / "log.lammps"
+    if not logf.exists():
+        return None
+    txt = logf.read_text(encoding="utf-8", errors="ignore")
+    m = re.findall(r"RESULT\s+PE_SINGLE\s+([0-9Ee+\-\.]+)", txt)
+    if not m:
+        return None
+    try:
+        return float(m[-1])
+    except ValueError:
+        return None
+
+
+def read_reference_ecoh(reference_dir: Path) -> float | None:
+    """True cohesive energy: E_per_atom - E_single_atom.
+
+    Returns ``None`` unless both the bulk reference run and the isolated
+    single-atom run have results available.
+    """
+    e_per_atom = read_reference_e_per_atom(reference_dir)
+    e_single = read_reference_single_atom(reference_dir)
+    if e_per_atom is None or e_single is None:
+        return None
+    return e_per_atom - e_single
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +284,14 @@ def prepare_reference_stage(config: PotentialConfig, run_dir: str | Path = ".") 
         _write_reference_input(ref_dir, n_replicate=config.potential.size_single,
                                tol=config.workflow.minimize_tol)
 
+        # Isolated-atom sanity check: same element, single atom, huge box.
+        single_dir = ref_dir / "single_atom"
+        single_dir.mkdir(parents=True, exist_ok=True)
+        build_single_atom_structure(single_dir, config, element)
+        _write_potential_include(single_dir, config.potential.pot_lines, config.potential.masses)
+        _copy_potential_files(root, config.potential.pot_name, single_dir, config.potential.potential_files)
+        _write_single_atom_input(single_dir)
+
     # Persist a snapshot of the config so later stages can verify what was run.
     snapshot = pot_dir / "config_snapshot.json"
     snapshot.write_text(json.dumps(asdict(config), indent=2), encoding="utf-8")
@@ -229,15 +310,6 @@ def prepare_reference_stage_single_element(config: PotentialConfig, run_dir: str
 # ---------------------------------------------------------------------------
 
 
-def _per_element_reference(pot_dir: Path, element: str) -> tuple[Path, Path]:
-    """Return (relaxed_data, ref_dir) for one element. Falls back to seed if not relaxed yet."""
-    ref_dir = pot_dir / "reference" / element
-    rel = ref_dir / "relaxed.data"
-    if rel.exists():
-        return rel, ref_dir
-    return ref_dir / "structure.data", ref_dir
-
-
 def _setup_case_dir(
     case_dir: Path,
     config: PotentialConfig,
@@ -251,6 +323,41 @@ def _setup_case_dir(
         _write_relax_input(case_dir, tol=config.workflow.minimize_tol)
     else:
         input_writer(case_dir)
+
+
+def _iter_alloy_compositions(config: PotentialConfig):
+    """Yield ``(pair_tag, comp_tag, composition, structure_name)`` for every
+    composition named in ``two_element_suites`` (each scanned fraction) and
+    ``multi_element_suites`` — the set of alloy points that
+    ``include_alloy_defects`` builds point-defect/Ef cases for.
+    """
+    for suite in config.potential.two_element_suites:
+        A = suite.get("A")
+        B = suite.get("B")
+        if not (A and B):
+            continue
+        struct = config.potential.crystal_structures.get(A, {}).get("structure", "bcc")
+        for frac in suite.get("fractions_atpct", []):
+            f = float(frac)
+            composition = {A: 100.0 - f, B: f}
+            pair_tag = f"{A}{B}"
+            comp_tag = f"{A}{int(round(100.0 - f))}_{B}{int(round(f))}"
+            yield pair_tag, comp_tag, composition, struct
+
+    for suite in config.potential.multi_element_suites:
+        composition_raw = suite.get("composition", {})
+        if not isinstance(composition_raw, dict) or len(composition_raw) < 2:
+            continue
+        try:
+            composition = resolve_composition(composition_raw)
+        except ValueError:
+            continue  # already reported by validate_config
+        suite_elements = list(composition.keys())
+        host = suite_elements[0]
+        struct = suite.get("structure") or config.potential.crystal_structures.get(host, {}).get("structure", "bcc")
+        pair_tag = "".join(suite_elements)
+        comp_tag = "_".join(f"{el}{int(round(pct))}" for el, pct in composition.items())
+        yield pair_tag, comp_tag, composition, struct
 
 
 def build_defects_post_reference(config: PotentialConfig, run_dir: str | Path = ".") -> dict[str, Any]:
@@ -271,6 +378,7 @@ def build_defects_post_reference(config: PotentialConfig, run_dir: str | Path = 
         "loops": [],
         "disloc_lines": [],
         "alloys": [],
+        "point_defects_alloy": [],
         "gas_complexes": [],
         "seakmc": [],
     }
@@ -281,24 +389,31 @@ def build_defects_post_reference(config: PotentialConfig, run_dir: str | Path = 
     for element in elements:
         ref_dir = pot_dir / "reference" / element
         lc = read_reference_lc(ref_dir, config.potential.lc_initial)
-        ecoh = read_reference_ecoh(ref_dir)
+        e_per_atom = read_reference_e_per_atom(ref_dir)
+        e_single = read_reference_single_atom(ref_dir)
+        ecoh = e_per_atom - e_single if e_per_atom is not None and e_single is not None else None
         per_el_lc[element] = lc
         if ecoh is not None:
             per_el_ecoh[element] = ecoh
-        manifest["reference"][element] = {"lc": lc, "ecoh": ecoh}
+        manifest["reference"][element] = {
+            "lc": lc, "ecoh": ecoh, "e_per_atom": e_per_atom, "e_single_atom": e_single,
+        }
 
     (pot_dir / "reference_values.json").write_text(json.dumps(manifest["reference"], indent=2), encoding="utf-8")
 
     # ---- point defects per element ----
     for element in elements:
         struct = config.potential.crystal_structures.get(element, {}).get("structure", "bcc")
-        rel_data, _ = _per_element_reference(pot_dir, element)
         lc = per_el_lc[element]
+        n_single = config.potential.size_single
         for case in config.workflow.defect_catalog:
             case_dir = pot_dir / "point_defects" / element / case
             _setup_case_dir(case_dir, config, root)
             try:
-                build_case_from_reference(rel_data, case_dir, case, config, element, struct, relaxed_lc=lc)
+                build_case_structure(
+                    case_dir, config, {element: 100.0}, case, struct,
+                    target_lc=lc, n_replicate=n_single,
+                )
                 manifest["point_defects"].append({
                     "element": element, "case": case, "dir": str(case_dir.relative_to(root)),
                 })
@@ -317,12 +432,14 @@ def build_defects_post_reference(config: PotentialConfig, run_dir: str | Path = 
             struct = config.potential.crystal_structures.get(element, {}).get("structure", "bcc")
             if struct.lower() != "bcc":
                 continue
-            rel_data, _ = _per_element_reference(pot_dir, element)
             lc = per_el_lc[element]
             for loop_case in ("SIL111", "SIL100"):
                 case_dir = pot_dir / "loops" / element / loop_case
                 _setup_case_dir(case_dir, config, root)
-                build_case_from_reference(rel_data, case_dir, loop_case, config, element, struct, relaxed_lc=lc)
+                build_case_structure(
+                    case_dir, config, {element: 100.0}, loop_case, struct,
+                    target_lc=lc, n_replicate=config.potential.size_single,
+                )
                 manifest["loops"].append({
                     "element": element, "case": loop_case, "dir": str(case_dir.relative_to(root)),
                 })
@@ -373,12 +490,74 @@ def build_defects_post_reference(config: PotentialConfig, run_dir: str | Path = 
                     "dir": str(case_dir.relative_to(root)),
                 })
 
+        # ---- multi-element (3+) alloys: one fixed composition per entry ----
+        for suite in config.potential.multi_element_suites:
+            composition_raw = suite.get("composition", {})
+            if not isinstance(composition_raw, dict) or len(composition_raw) < 2:
+                continue
+            try:
+                composition = resolve_composition(composition_raw)
+            except ValueError:
+                continue  # already reported by validate_config
+            suite_elements = list(composition.keys())
+            host = suite_elements[0]
+            ordering = suite.get("ordering", "random")
+            struct = suite.get("structure") or config.potential.crystal_structures.get(host, {}).get("structure", "bcc")
+            lc_host = per_el_lc.get(host, config.potential.lc_initial)
+            pair_tag = "".join(suite_elements)
+            comp_tag = "_".join(f"{el}{int(round(pct))}" for el, pct in composition.items())
+            case_dir = pot_dir / "alloy_lc" / pair_tag / comp_tag
+            _setup_case_dir(
+                case_dir,
+                config,
+                root,
+                input_writer=lambda d, n=config.potential.size_alloy,
+                t=config.workflow.minimize_tol: _write_alloy_lc_input(d, n, tol=t),
+            )
+            status = build_multi_alloy_structure(
+                case_dir, config, composition, struct,
+                ordering=ordering, relaxed_lc_host=lc_host,
+            )
+            manifest["alloys"].append({
+                "composition": composition, "ordering": status,
+                "dir": str(case_dir.relative_to(root)),
+            })
+
+    # ---- alloy point-defect formation energies (opt-in, replica-averaged) ----
+    # Separate gate from include_alloy_suite: every alloy build is an
+    # independent random draw (see structure_ops.py), so a meaningful Ef
+    # needs several replicas averaged together -- materially more expensive
+    # than the plain lc scan above.
+    if config.workflow.include_alloy_defects:
+        n_alloy = config.potential.size_alloy
+        for pair_tag, comp_tag, composition, struct in _iter_alloy_compositions(config):
+            host = next(iter(composition))
+            lc_host = per_el_lc.get(host, config.potential.lc_initial)
+            base = pot_dir / "point_defects_alloy" / pair_tag / comp_tag
+            for rep in range(config.workflow.alloy_defect_replicas):
+                for case in ["bulk"] + config.workflow.defect_catalog:
+                    case_dir = base / f"rep{rep}" / case
+                    _setup_case_dir(case_dir, config, root)
+                    try:
+                        build_case_structure(
+                            case_dir, config, composition, case, struct,
+                            target_lc=lc_host, n_replicate=n_alloy,
+                        )
+                        manifest["point_defects_alloy"].append({
+                            "pair": pair_tag, "composition": comp_tag, "replica": rep,
+                            "case": case, "dir": str(case_dir.relative_to(root)),
+                        })
+                    except NotImplementedError as exc:
+                        manifest["point_defects_alloy"].append({
+                            "pair": pair_tag, "composition": comp_tag, "replica": rep,
+                            "case": case, "skipped": str(exc),
+                        })
+
     # ---- gas complexes ----
     if config.workflow.include_gas_complexes and config.potential.gases:
         pairs = expand_gas_pairs(config.potential)
         for metal, gas in pairs:
             struct = config.potential.crystal_structures.get(metal, {}).get("structure", "bcc")
-            rel_data, _ = _per_element_reference(pot_dir, metal)
             lc = per_el_lc.get(metal, config.potential.lc_initial)
             base = pot_dir / "gas_complexes" / f"{metal}-{gas}"
 
@@ -386,7 +565,7 @@ def build_defects_post_reference(config: PotentialConfig, run_dir: str | Path = 
             for site in ("tetra", "octa"):
                 case_dir = base / f"{gas}1_{site}"
                 _setup_case_dir(case_dir, config, root)
-                build_single_gas_in_bulk(rel_data, case_dir, metal, gas, site, config, struct, relaxed_lc=lc)
+                build_single_gas_in_bulk(case_dir, metal, gas, site, config, struct, relaxed_lc=lc)
                 manifest["gas_complexes"].append({
                     "metal": metal, "gas": gas, "n": 1, "m": 0, "kind": f"single_{site}",
                     "dir": str(case_dir.relative_to(root)),
@@ -405,7 +584,7 @@ def build_defects_post_reference(config: PotentialConfig, run_dir: str | Path = 
                         case_dir = base / f"{gas}{n}_{vi}{m}"
                         _setup_case_dir(case_dir, config, root)
                         build_gas_complex_structure(
-                            rel_data, case_dir, metal, gas, n, m, kind,
+                            case_dir, metal, gas, n, m, kind,
                             config, struct, relaxed_lc=lc,
                         )
                         manifest["gas_complexes"].append({
@@ -468,11 +647,19 @@ def summarize_stage(config: PotentialConfig, run_dir: str | Path = ".") -> Path:
         if not element_dir.is_dir():
             continue
         lc = read_reference_lc(element_dir, config.potential.lc_initial)
-        ecoh = read_reference_ecoh(element_dir)
-        rows.append({"pot_name": config.potential.pot_name, "case": f"reference/{element_dir.name}",
-                     "metric": "lc", "value": lc})
+        e_per_atom = read_reference_e_per_atom(element_dir)
+        e_single = read_reference_single_atom(element_dir)
+        ecoh = e_per_atom - e_single if e_per_atom is not None and e_single is not None else None
+        case = f"reference/{element_dir.name}"
+        rows.append({"pot_name": config.potential.pot_name, "case": case, "metric": "lc", "value": lc})
+        if e_per_atom is not None:
+            rows.append({"pot_name": config.potential.pot_name, "case": case,
+                         "metric": "E_per_atom", "value": e_per_atom})
+        if e_single is not None:
+            rows.append({"pot_name": config.potential.pot_name, "case": case,
+                         "metric": "E_single_atom", "value": e_single})
         if ecoh is not None:
-            rows.append({"pot_name": config.potential.pot_name, "case": f"reference/{element_dir.name}",
+            rows.append({"pot_name": config.potential.pot_name, "case": case,
                          "metric": "E_coh", "value": ecoh})
 
     out = root / "summary.csv"

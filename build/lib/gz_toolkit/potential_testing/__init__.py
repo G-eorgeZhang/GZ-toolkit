@@ -20,7 +20,7 @@ from gz_toolkit.potential_testing.config import (
     load_potential_configs,
     save_potential_config,
 )
-from gz_toolkit.potential_testing.project import init_potential_project, default_config
+from gz_toolkit.potential_testing.project import init_potential_project, default_config, write_driver_scripts
 from gz_toolkit.potential_testing.pipeline import (
     build_defects_post_reference,
     prepare_defect_stage,
@@ -30,8 +30,14 @@ from gz_toolkit.potential_testing.pipeline import (
 from gz_toolkit.potential_testing.parallel import emit_jobs, scatter_cases
 from gz_toolkit.potential_testing.seakmc_runner import emit_seakmc_inputs
 from gz_toolkit.potential_testing.elastic import build_elastic_cases, render_elastic_inputs
-from gz_toolkit.potential_testing.summary import write_summary, write_wide_summary
+from gz_toolkit.potential_testing.summary import (
+    build_pot_tag_json,
+    write_summary,
+    write_wide_summary,
+    write_grouped_summaries,
+)
 from gz_toolkit.potential_testing.validate import validate_config, validate_project
+from gz_toolkit.potential_testing.check import check_potential_files, check_case_dirs, check_project
 from gz_toolkit.potential_testing.status import classify_case, collect_status, format_status_table
 from gz_toolkit.potential_testing.wizard import run_init_wizard
 from gz_toolkit.potential_testing.workflow import run_all, run_workflow, summarize_all
@@ -50,6 +56,7 @@ __all__ = [
     # Project bootstrap
     "init_potential_project",
     "default_config",
+    "write_driver_scripts",
     # Pipeline stages
     "prepare_reference_stage",
     "prepare_defect_stage",
@@ -64,11 +71,16 @@ __all__ = [
     "build_elastic_cases",
     "render_elastic_inputs",
     # Summary
+    "build_pot_tag_json",
     "write_summary",
     "write_wide_summary",
+    "write_grouped_summaries",
     # Validation / status / wizard
     "validate_config",
     "validate_project",
+    "check_potential_files",
+    "check_case_dirs",
+    "check_project",
     "classify_case",
     "collect_status",
     "format_status_table",

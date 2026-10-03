@@ -52,6 +52,10 @@ class PotentialMetadata:
     gas_with_vacancy: bool = True
     gas_with_interstitial: bool = True
     two_element_suites: list[dict[str, Any]] = field(default_factory=list)
+    # Single-point compositions for 3+ (or 2) element random-substitution alloys.
+    # Each entry: {"composition": {el: at.% or null, ...}, "structure": "bcc",
+    # "ordering": "random"}. See `resolve_composition`.
+    multi_element_suites: list[dict[str, Any]] = field(default_factory=list)
     crystal_structures: dict[str, dict[str, Any]] = field(default_factory=dict)
     lc_initial: float = 2.85
     size_single: int = 20
@@ -66,6 +70,13 @@ class PotentialMetadata:
     # Type of potential — selects HPC defaults and SEAKMC compatibility.
     # "classical" (eam/meam/hybrid), "ml" (mtp/snap), "universal" (chgnet/mace).
     kind: str = "classical"
+    # Whether/where to copy this pot's <pot_name>.json into gz_toolkit/pot_infobank/
+    # once its tests finish (see gz_toolkit.pot_infobank.promote_tag_json):
+    #   False (default) -> never copy.
+    #   True             -> copy to the cluster's path2gz_toolkit/pot_infobank/
+    #                        (hpc.cluster must be set; see cluster_info/<CLUSTER>/meta.json).
+    #   a path string    -> copy there verbatim, no validation.
+    promote_to_infobank: bool | str = False
 
 
 @dataclass
@@ -81,8 +92,8 @@ class HPCOptions:
     # Hard upper limit on how many sims one batch .job can drive (site-imposed).
     # When a work group exceeds this, the group splits into _1, _2, ... files.
     max_jobs_per_batch: int = 200
-    # Default LAMMPS run command; {{NTASKS}} and {{INPUT}} are placeholders.
-    run_command: str = "srun -n {{NTASKS}} lmp_mpi -in {{INPUT}}"
+    # Default LAMMPS run command; {{NTASKS}}, {{INPUT}}, {{LAMMPS_BIN}} are placeholders.
+    run_command: str = "srun -n {{NTASKS}} {{LAMMPS_BIN}} -in {{INPUT}}"
     # CPU vs GPU pots (universal/ML are usually GPU).
     device: str = "cpu"          # "cpu" or "gpu"
     gpus_per_node: int = 0
@@ -90,6 +101,13 @@ class HPCOptions:
     modules: list[str] = field(default_factory=list)
     # Optional conda env activation (ignored if None).
     conda_env: str | None = None
+    # Full path to a custom lmp_mpi binary (e.g. a custom-compiled MTP build).
+    # Falls back to plain "lmp_mpi" on PATH if not set.
+    lammps_binary_path: str | None = None
+    # Directory prepended to LD_LIBRARY_PATH before the run command — needed
+    # when lmp_mpi was built without RPATH and depends on shared libs (e.g.
+    # the LAMMPS src/ dir of a custom MTP-enabled build).
+    lammps_src_path: str | None = None
 
 
 @dataclass
@@ -114,6 +132,16 @@ class WorkflowOptions:
     include_dislocation_lines: bool = False
     include_alloy_suite: bool = False
     include_gas_complexes: bool = False
+
+    # Alloy point-defect formation energies (two_element_suites and
+    # multi_element_suites compositions). Separate opt-in from
+    # include_alloy_suite -- materially more expensive (replicas x
+    # defect_catalog x composition), since every alloy build is randomized
+    # (see structure_ops.py) and needs averaging to be meaningful.
+    include_alloy_defects: bool = False
+    # Independent random realizations averaged per (composition, case) to
+    # smooth out configurational noise from the random solute placement.
+    alloy_defect_replicas: int = 3
 
     # Elastic constants (full 6x6 Cij via the LAMMPS examples/ELASTIC scheme).
     # Core test -> on by default for every element in single_elements.
@@ -169,7 +197,15 @@ def _filter_kwargs(cls, payload: dict[str, Any]) -> dict[str, Any]:
 def load_potential_config(path: str | Path) -> PotentialConfig:
     """Load a single per-potential JSON file."""
     cfg_path = Path(path)
-    payload = json.loads(cfg_path.read_text(encoding="utf-8"))
+    text = cfg_path.read_text(encoding="utf-8")
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Invalid JSON in '{cfg_path}': {exc.msg} at line {exc.lineno}, "
+            f"column {exc.colno}. Check for a trailing comma, a Python-style "
+            f"comment (# ...), or an unquoted value near that spot."
+        ) from exc
     payload = _coerce_mass_keys(payload)
     potential = PotentialMetadata(**_filter_kwargs(PotentialMetadata, payload["potential"]))
     workflow = WorkflowOptions(**_filter_kwargs(WorkflowOptions, payload.get("workflow", {})))
@@ -230,3 +266,45 @@ def expand_gas_pairs(meta: PotentialMetadata) -> list[tuple[str, str]]:
     if meta.gas_complex_pairs:
         return [(p[0], p[1]) for p in meta.gas_complex_pairs if len(p) == 2]
     return [(m, g) for m in meta.single_elements for g in meta.gases]
+
+
+def resolve_composition(composition: dict[str, Any], tol: float = 1e-6) -> dict[str, float]:
+    """Resolve a (possibly partial) at.% composition into concrete numbers.
+
+    ``composition`` maps element -> at.% (a number) or ``None``/``null`` for
+    "whatever is left". Any number of elements may be ``None``: the remaining
+    at.% (100 minus the explicit entries) is split evenly across them, e.g.
+    ``{"Cr": 3, "Fe": None}`` -> ``{"Cr": 3.0, "Fe": 97.0}`` and
+    ``{"Fe": None, "Cr": None, "Ni": None}`` -> equal thirds.
+
+    With no ``None`` entries, the explicit values must already sum to 100
+    (within ``tol``). Key order is preserved — callers use the first key as
+    the "host" lattice species for cell seeding.
+    """
+    if len(composition) < 2:
+        raise ValueError(f"Composition {composition} needs at least 2 elements for an alloy.")
+
+    explicit = {el: float(v) for el, v in composition.items() if v is not None}
+    null_elements = [el for el, v in composition.items() if v is None]
+
+    explicit_sum = sum(explicit.values())
+    if null_elements:
+        remainder = 100.0 - explicit_sum
+        if remainder <= 0:
+            raise ValueError(
+                f"Composition {composition}: explicit fractions already sum to "
+                f"{explicit_sum:g}, leaving nothing for {null_elements}."
+            )
+        share = remainder / len(null_elements)
+        resolved = dict(explicit)
+        for el in null_elements:
+            resolved[el] = share
+    else:
+        if abs(explicit_sum - 100.0) > tol:
+            raise ValueError(
+                f"Composition {composition} sums to {explicit_sum:g}, not 100 "
+                f"(no null entry to absorb the difference)."
+            )
+        resolved = explicit
+
+    return {el: resolved[el] for el in composition}

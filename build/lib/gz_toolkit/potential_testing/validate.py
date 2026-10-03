@@ -12,6 +12,7 @@ from pathlib import Path
 from gz_toolkit.potential_testing.config import (
     PotentialConfig,
     load_potential_config,
+    resolve_composition,
 )
 
 _WALLTIME_RE = re.compile(r"^\d+:\d{2}:\d{2}$|^\d+-\d+:\d{2}:\d{2}$")
@@ -98,6 +99,34 @@ def validate_config(cfg: PotentialConfig) -> list[str]:
                     f"0 and 100 (exclusive)."
                 )
 
+    # --- multi-element (3+) alloys --------------------------------------------
+    for suite in pot.multi_element_suites:
+        composition = suite.get("composition")
+        if not isinstance(composition, dict) or len(composition) < 2:
+            problems.append(
+                f"multi_element_suites entry {suite} needs a \"composition\" "
+                f"dict with at least 2 elements, e.g. {{\"Fe\": null, \"Cr\": 3}}."
+            )
+            continue
+        for name in composition:
+            if name not in pot.type_map:
+                problems.append(
+                    f"multi_element_suites composition mentions '{name}', which "
+                    f"is not in type_map."
+                )
+        try:
+            resolve_composition(composition)
+        except ValueError as exc:
+            problems.append(str(exc))
+        ordering = suite.get("ordering", "random")
+        requested = [o.strip().lower() for o in str(ordering).split("|") if o.strip()]
+        if requested and "random" not in requested:
+            problems.append(
+                f"multi_element_suites entry {suite} requests ordering "
+                f"'{ordering}', but only 'random' is supported for 3+ element "
+                f"alloys."
+            )
+
     # --- SEAKMC ---------------------------------------------------------------
     if wf.seakmc_enabled:
         unknown = [d for d in wf.seakmc_defects if d not in wf.defect_catalog]
@@ -132,11 +161,26 @@ def validate_config(cfg: PotentialConfig) -> list[str]:
     if hpc.ntasks < 1:
         problems.append(f"ntasks must be at least 1 (got {hpc.ntasks}).")
 
-    if wf.elastic_for_alloys and not pot.two_element_suites:
+    if wf.elastic_for_alloys and not pot.two_element_suites and not pot.multi_element_suites:
         problems.append(
-            "elastic_for_alloys is on, but two_element_suites is empty — "
-            "there are no alloy compositions to compute Cij for."
+            "elastic_for_alloys is on, but two_element_suites and "
+            "multi_element_suites are both empty — there are no alloy "
+            "compositions to compute Cij for."
         )
+
+    if wf.include_alloy_defects:
+        if not pot.two_element_suites and not pot.multi_element_suites:
+            problems.append(
+                "include_alloy_defects is on, but two_element_suites and "
+                "multi_element_suites are both empty — there are no alloy "
+                "compositions to build point defects for."
+            )
+        if wf.alloy_defect_replicas < 1:
+            problems.append(
+                f"alloy_defect_replicas must be a positive integer (got "
+                f"{wf.alloy_defect_replicas}) — each alloy build is randomized, "
+                f"so at least one replica is needed."
+            )
 
     return problems
 

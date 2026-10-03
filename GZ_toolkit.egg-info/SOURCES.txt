@@ -14,6 +14,7 @@ gz_toolkit/buildmtx/buildstr.py
 gz_toolkit/core/__init__.py
 gz_toolkit/core/modlmp.py
 gz_toolkit/defect/__init__.py
+gz_toolkit/defect/base.py
 gz_toolkit/defect/bcc_defect.py
 gz_toolkit/defect/fcc_defect.py
 gz_toolkit/jobs/__init__.py
@@ -21,6 +22,8 @@ gz_toolkit/jobs/directory.py
 gz_toolkit/jobs/submission.py
 gz_toolkit/jobs/template_engine.py
 gz_toolkit/jobs/tree.py
+gz_toolkit/jobs/cluster_info/ISAAC/ISAAC.csv
+gz_toolkit/jobs/cluster_info/ISAAC/meta.json
 gz_toolkit/jobs/templates/slurm_default.job
 gz_toolkit/jobs/templates/machines/ISAAC.job
 gz_toolkit/jobs/templates/machines/README.txt
@@ -46,11 +49,7 @@ gz_toolkit/potential_testing/templates/in.elastic
 gz_toolkit/potential_testing/templates/init.mod.tpl
 gz_toolkit/potential_testing/templates/potential.mod
 tests/test_bcc_defect.py
-tests/test_buildstr.py
 tests/test_jobs.py
 tests/test_modlmp.py
 tests/test_potential_testing.py
-tests/test_potential_testing_elastic.py
 tests/test_potential_testing_summary_grouping.py
-tests/test_potential_testing_tools.py
-tests/test_potential_testing_wizard.py

@@ -9,6 +9,9 @@ import copy
 
 class Gen_crystal:
 
+    #: ideal close-packed c/a for hexagonal prototypes
+    IDEAL_COVERA = math.sqrt(8 / 3)
+
     def __init__(self,atom_style: Literal["atomic", "charge", "full"] = "atomic",):
         self.atom_style = atom_style
 
@@ -33,14 +36,37 @@ class Gen_crystal:
                 ],
             },
 
-            "A3": {  # HCP
-                "lattice": lambda: Lattice.hexagonal(
+            "A3": {  # HCP, primitive hexagonal cell (gamma = 120 deg)
+                "covera": True,
+                "lattice": lambda covera: Lattice.hexagonal(
                     1.0,
-                    math.sqrt(8 / 3),
+                    covera,
                 ),
                 "coords": [
                     [0, 0, 0],
                     [2 / 3, 1 / 3, 0.5],
+                ],
+            },
+
+            # Orthogonal (C-centred) HCP cell: 1 x sqrt(3) x c/a, 4 atoms.
+            # Same crystal as A3, obtained with the supercell matrix
+            #     x = [100]  = [2-1-10]   length a
+            #     y = [120]  = [01-10]    length sqrt(3) a
+            #     z = [001]  = [0001]     length c
+            # (det = 2, so 2 primitive cells -> 4 atoms).  The rectangular box
+            # is what lets replicate() tile the cell without a tilted LAMMPS box.
+            "A3_ORTHO": {
+                "covera": True,
+                "lattice": lambda covera: Lattice([
+                    [1.0, 0.0, 0.0],
+                    [0.0, math.sqrt(3.0), 0.0],
+                    [0.0, 0.0, covera],
+                ]),
+                "coords": [
+                    [0.0, 0.0, 0.0],        # A layer
+                    [0.5, 0.5, 0.0],        # A layer, C-centring
+                    [0.5, 1 / 6, 0.5],      # B layer, centroid of the A triangle
+                    [0.0, 2 / 3, 0.5],      # B layer, centroid + centring
                 ],
             },
 
@@ -137,17 +163,52 @@ class Gen_crystal:
         structure_type: str,
         elements: list[str],
         filename: str,
+        covera: float | None = None,
     ):
+        """
+        Write a seed unit cell (a = 1) as a LAMMPS data file.
+
+        Parameters
+        ----------
+        structure_type : str
+            Prototype key, e.g. "A1", "A2", "A3", "A3_ORTHO".
+        elements : list of str
+            One symbol per basis site (see PROTOTYPES for the count).
+            A single symbol is broadcast to every site.
+        filename : str
+            Output LAMMPS data file.
+        covera : float or None
+            c/a ratio, for hexagonal prototypes only.  Defaults to the ideal
+            close-packed value sqrt(8/3) ~ 1.633.  Real metals deviate
+            (Ti 1.587, Mg 1.624, Zn 1.856), so set this explicitly when it
+            matters.  Ignored by cubic prototypes.
+        """
 
         structure_type = structure_type.upper()
 
         if structure_type not in self.PROTOTYPES:
             raise ValueError(
-                f"Unknown structure type: {structure_type}"
+                f"Unknown structure type: {structure_type}. "
+                f"Available: {', '.join(sorted(self.PROTOTYPES))}"
             )
 
         proto = self.PROTOTYPES[structure_type]
         coords = proto["coords"]
+
+        if proto.get("covera"):
+            lattice = proto["lattice"](
+                self.IDEAL_COVERA if covera is None else covera
+            )
+        else:
+            if covera is not None:
+                raise ValueError(
+                    f"{structure_type} is not a hexagonal prototype; "
+                    f"covera does not apply."
+                )
+            lattice = proto["lattice"]()
+
+        if len(elements) == 1:
+            elements = list(elements) * len(coords)
 
         if len(elements) != len(coords):
             raise ValueError(
@@ -157,7 +218,7 @@ class Gen_crystal:
             )
 
         struct = Structure(
-            proto["lattice"](),
+            lattice,
             elements,
             coords,
         )

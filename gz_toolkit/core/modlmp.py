@@ -11,6 +11,33 @@ from mylammps.elastic.distortion import Distortion
 class Modlmp_LmpData(lmpData):
 
     # -----------------------
+    # Vacuum padding
+    # -----------------------
+
+    def add_vacuum(self, lvac=20.0, direction=2, zero_coords=True, thres=[0.1, 0.1, 0.1]):
+        """
+        Pad the box with vacuum along `direction` WITHOUT moving any atoms.
+
+        Overrides lmpData.add_vacuum (which re-centers atoms by shifting
+        them by lvac/2 and stretches the box by only lvac total). Here both
+        bounds are pushed out symmetrically by lvac:
+            new_lo = old_lo - lvac
+            new_hi = old_hi + lvac
+        e.g. a 0-20 box along z becomes -20 to 40 for lvac=20. Atom Cartesian
+        coordinates (x/y/z) are left exactly as they are; only the box and
+        the derived fractional coordinates (xsn/ysn/zsn) are updated.
+
+        `zero_coords`/`thres` are accepted only for call-site compatibility
+        with lmpData.create_edge_dislocation/create_screw_dislocation (which
+        call self.add_vacuum(..., zero_coords=True, ...)) and are not used.
+        """
+        bounds = copy.deepcopy(self.box.bounds)
+        bounds[direction][0] -= lvac
+        bounds[direction][1] += lvac
+        self.box = lmpBox(bounds, tilt=self.box.tilt)
+        self.coords2fracts(normalization=False)
+
+    # -----------------------
     # PBC helpers (triclinic-safe)
     # -----------------------
 

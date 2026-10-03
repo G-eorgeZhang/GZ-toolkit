@@ -90,9 +90,13 @@ def _render_header(
 
 
 def _run_lammps(config: PotentialConfig, input_name: str) -> str:
-    cmd = config.hpc.run_command
-    cmd = cmd.replace("{{NTASKS}}", str(config.hpc.ntasks))
+    hpc = config.hpc
+    cmd = hpc.run_command
+    cmd = cmd.replace("{{NTASKS}}", str(hpc.ntasks))
     cmd = cmd.replace("{{INPUT}}", input_name)
+    cmd = cmd.replace("{{LAMMPS_BIN}}", hpc.lammps_binary_path or "lmp_mpi")
+    if hpc.lammps_src_path:
+        cmd = f"export LD_LIBRARY_PATH={hpc.lammps_src_path}:$LD_LIBRARY_PATH\n{cmd}"
     return cmd
 
 
@@ -119,6 +123,7 @@ def _reference_body(config: PotentialConfig, project_root: Path) -> str:
     for el in elements:
         ref = pot_dir / "reference" / el
         lines.append(_bash_for_dir(ref, _run_lammps(config, "in.reference.lammps"), project_root))
+        lines.append(_bash_for_dir(ref / "single_atom", _run_lammps(config, "in.single_atom.lammps"), project_root))
     return "\n".join(lines)
 
 
@@ -127,6 +132,19 @@ def _build_defects_body(config: PotentialConfig, pot_config_path: Path, project_
         "# --- Stage 2: build defect / alloy / gas case dirs from relaxed reference ---\n"
         f'cd "{project_root.resolve()}"\n'
         f'python -m gz_toolkit.potential_testing.cli build-defects '
+        f'--pot-config "{pot_config_path.resolve()}" --run-dir "{project_root.resolve()}"\n'
+    )
+
+
+def _summarize_pot_body(config: PotentialConfig, pot_config_path: Path, project_root: Path) -> str:
+    """Final stage: parse this pot's own logs into <pot_name>.json (and
+    promote it, if configured) — runs automatically once every other stage
+    for this pot is done, so nobody has to remember to call
+    ``summarize-pot`` by hand."""
+    return (
+        "# --- Final: build this pot's <pot_name>.json (and promote it, if configured) ---\n"
+        f'cd "{project_root.resolve()}"\n'
+        f'python -m gz_toolkit.potential_testing.cli summarize-pot '
         f'--pot-config "{pot_config_path.resolve()}" --run-dir "{project_root.resolve()}"\n'
     )
 
@@ -269,6 +287,7 @@ def _all_stages_body(cfg: PotentialConfig, pot_config_path: Path, project_root: 
         parts.append(_runtime_group_body(cfg, pot_dir, "gas_complexes", "in.relax.lammps"))
     if cfg.workflow.seakmc_enabled:
         parts.append(_runtime_group_body(cfg, pot_dir, "seakmc", ""))
+    parts.append(_summarize_pot_body(cfg, pot_config_path, project_root))
     return "\n".join(parts)
 
 
@@ -357,6 +376,7 @@ def _emit_paral3(cfg: PotentialConfig, project_root: Path, pot_inputs_dir: Path)
         submit.append(f'echo "  {group}: ${var}"')
         last_id_var = var
 
+    dep_ids = [last_id_var]
     if cfg.workflow.seakmc_enabled:
         body = _runtime_group_body(cfg, pot_dir, "seakmc", "")
         text = _render_header(cfg, jobname=f"{cfg.potential.pot_name}_seakmc") + "\n" + body + "\ndate\n"
@@ -364,6 +384,20 @@ def _emit_paral3(cfg: PotentialConfig, project_root: Path, pot_inputs_dir: Path)
         path.write_text(text, encoding="utf-8")
         submit.append(f'seakmc_id=$(sbatch --parsable --dependency=afterok:$point_defects_id "{path}")')
         submit.append('echo "  seakmc: $seakmc_id"')
+        # seakmc branches off point_defects, in parallel with any later groups —
+        # so the final summarize_pot job must wait on both branches, not just
+        # whichever "last_id_var" happens to be.
+        dep_ids.append("seakmc_id")
+
+    # Final job: build this pot's <pot_name>.json (and promote it, if configured)
+    # once every branch above has finished — no manual summarize-pot needed.
+    dep_clause = ":".join(f"${v}" for v in dep_ids)
+    sm_text = _render_header(cfg, jobname=f"{cfg.potential.pot_name}_summarize") + "\n" + \
+              _summarize_pot_body(cfg, pot_json, project_root) + "\ndate\n"
+    sm_path = pot_dir / "summarize_pot.job"
+    sm_path.write_text(sm_text, encoding="utf-8")
+    submit.append(f'summarize_id=$(sbatch --parsable --dependency=afterok:{dep_clause} "{sm_path}")')
+    submit.append('echo "  summarize_pot: $summarize_id"')
 
     return submit
 
@@ -429,6 +463,8 @@ def _emit_paral4(cfg: PotentialConfig, project_root: Path, pot_inputs_dir: Path)
         ref_path = pot_dir / "reference" / el / "run.job"
         ref_path.parent.mkdir(parents=True, exist_ok=True)
         body = _bash_for_dir(ref_path.parent, _run_lammps(cfg, "in.reference.lammps"), project_root)
+        body += _bash_for_dir(ref_path.parent / "single_atom",
+                              _run_lammps(cfg, "in.single_atom.lammps"), project_root)
         text = _render_header(cfg, jobname=f"{cfg.potential.pot_name}_ref_{el}") + "\n" + body + "\ndate\n"
         ref_path.write_text(text, encoding="utf-8")
         var = f"ref{i}_id"
@@ -533,6 +569,20 @@ def scatter_cases(cfg: PotentialConfig, project_root: Path, pot_inputs_dir: Path
             jid = _sbatch(jpath, dependency=dep)
             if jid:
                 submitted.append(jid)
+
+    # Final job: once every scattered case (+ SEAKMC) job for this pot has
+    # finished, build <pot_name>.json (and promote it, if configured)
+    # automatically — no manual summarize-pot needed. Always written for a manual fallback;
+    # only auto-submitted if we actually collected job ids to depend on
+    # (i.e. sbatch was available above).
+    pot_json = pot_inputs_dir / f"{cfg.potential.pot_name}.json"
+    sm_path = pot_dir / "summarize_pot.job"
+    sm_text = _render_header(cfg, jobname=f"{cfg.potential.pot_name}_summarize") + "\n" + \
+              _summarize_pot_body(cfg, pot_json, project_root) + "\ndate\n"
+    sm_path.write_text(sm_text, encoding="utf-8")
+    written.append(sm_path)
+    if submitted:
+        _sbatch(sm_path, dependency=":".join(submitted))
 
     return written
 

@@ -11,6 +11,33 @@ from mylammps.elastic.distortion import Distortion
 class Modlmp_LmpData(lmpData):
 
     # -----------------------
+    # Vacuum padding
+    # -----------------------
+
+    def add_vacuum(self, lvac=20.0, direction=2, zero_coords=True, thres=[0.1, 0.1, 0.1]):
+        """
+        Pad the box with vacuum along `direction` WITHOUT moving any atoms.
+
+        Overrides lmpData.add_vacuum (which re-centers atoms by shifting
+        them by lvac/2 and stretches the box by only lvac total). Here both
+        bounds are pushed out symmetrically by lvac:
+            new_lo = old_lo - lvac
+            new_hi = old_hi + lvac
+        e.g. a 0-20 box along z becomes -20 to 40 for lvac=20. Atom Cartesian
+        coordinates (x/y/z) are left exactly as they are; only the box and
+        the derived fractional coordinates (xsn/ysn/zsn) are updated.
+
+        `zero_coords`/`thres` are accepted only for call-site compatibility
+        with lmpData.create_edge_dislocation/create_screw_dislocation (which
+        call self.add_vacuum(..., zero_coords=True, ...)) and are not used.
+        """
+        bounds = copy.deepcopy(self.box.bounds)
+        bounds[direction][0] -= lvac
+        bounds[direction][1] += lvac
+        self.box = lmpBox(bounds, tilt=self.box.tilt)
+        self.coords2fracts(normalization=False)
+
+    # -----------------------
     # PBC helpers (triclinic-safe)
     # -----------------------
 
@@ -136,6 +163,112 @@ class Modlmp_LmpData(lmpData):
             self.initialization(normalization=False, style=1)
 
         return n_del
+
+    # ------------------------------------------------------------------
+    # Screw dislocation — OVITO-style: atan2 displacement field + box shear.
+    #
+    # Overrides lmpData.create_screw_dislocation (the old bcc/fcc/hcp
+    # glide-type + chop-atoms implementation). Convention: z || Burgers
+    # vector == line direction (same frame BCCDefect.screw_dislocation
+    # already rotates into via swap_axes before calling this).
+    #
+    # For each core at (cx, cy) in the local x-y cross-section:
+    #     theta = atan2(y - cy, x - cx)
+    #     z    += -sign * (burgerm / 2*pi) * theta
+    # atan2's branch cut runs along -x from the core, so it always exits
+    # the box through the x-periodic boundary. Rather than chopping atoms
+    # there, the box is re-expressed with the a-vector carrying a burgerm/2
+    # shear along z (so the periodic image across that boundary lines up
+    # with the displacement jump); lattice_2_lmpbox + modify_by_symmetry
+    # re-canonicalize that sheared matrix back into the restricted
+    # LAMMPS triclinic form (a-vector along x) the same way swap_axes does,
+    # rotating the atoms along with it so box and atoms stay consistent.
+    # A dipole/quadrupole (nscrews=2/4) has canceling signed cores, so the
+    # net shear is zero and no box change is needed at all.
+    # ------------------------------------------------------------------
+
+    def create_screw_dislocation(self, burgerm, nscrews=1, style="bcc", handle_pbc="tilt",
+                                 orientation=True, add_vacuum=False, direction=0, lvac=20.0,
+                                 center_offset=(0.0, 0.0)):
+        """
+        Insert nscrews screw dislocation(s) via an isotropic atan2
+        displacement field plus a box shear (see class-level comment above).
+
+        `style`, `handle_pbc`, and `orientation` are accepted only for
+        signature compatibility with the call site in BCCDefect.screw_dislocation
+        and are not used: this implementation is lattice-agnostic and always
+        uses the box-shear (tilt) approach, never a per-style chop-atoms path.
+
+        center_offset : (dx, dy) or list of (dx, dy), Cartesian Angstrom
+            Default core placement snaps to the nearest atom to the box
+            center (or the dipole/quadrupole fractional positions below).
+            center_offset nudges the theta-reference point in the local
+            x-y plane AFTER that snap, e.g. center_offset=(0.0, -2.0) moves
+            the core 2 A down in y. A single (dx, dy) pair is applied to
+            every core; pass a list of nscrews pairs to offset each core
+            independently (e.g. for a dipole where the two cores need
+            different fine-tuning).
+        """
+        self.zero_coords()
+        buffer = burgerm * 0.03
+
+        if nscrews == 1:
+            centers_frac = [[0.5, 0.5, 0.5]]
+            signs = [1.0]
+        elif nscrews == 2:
+            centers_frac = [[0.5, 0.25, 0.5], [0.5, 0.75, 0.5]]
+            signs = [1.0, -1.0]
+        elif nscrews == 4:
+            centers_frac = [[0.25, 0.25, 0.5], [0.25, 0.75, 0.5],
+                            [0.75, 0.25, 0.5], [0.75, 0.75, 0.5]]
+            signs = [1.0, -1.0, -1.0, 1.0]
+        else:
+            raise ValueError("Uncoded number of screw dislocations.")
+
+        if (len(center_offset) == 2
+                and not isinstance(center_offset[0], (list, tuple, np.ndarray))):
+            offsets = [center_offset] * len(centers_frac)
+        else:
+            offsets = list(center_offset)
+            if len(offsets) != len(centers_frac):
+                raise ValueError(
+                    f"center_offset must be a single (dx, dy) pair or a list of "
+                    f"{len(centers_frac)} pairs (one per core), got {len(offsets)}."
+                )
+
+        centers = []
+        for cf, (ox, oy) in zip(centers_frac, offsets):
+            coords = np.dot(np.array(cf), self.box.matrix)
+            _, coords, _, _ = self.find_center_atom_coords(
+                burgerm + buffer, center=coords, is_cartesian=True, style=1)
+            coords = np.array(coords, dtype=float, copy=True)
+            coords[0] += float(ox)
+            coords[1] += float(oy)
+            centers.append(coords)
+
+        x = self.atoms["x"].to_numpy(dtype=float)
+        y = self.atoms["y"].to_numpy(dtype=float)
+        z = self.atoms["z"].to_numpy(dtype=float)
+
+        dz = np.zeros(len(x))
+        for (cx, cy, cz), s in zip(centers, signs):
+            theta = np.arctan2(y - cy, x - cx)
+            dz += -s * (burgerm / (2.0 * np.pi)) * theta
+
+        self.atoms["z"] = z + dz
+
+        net_sign = float(np.sum(signs))
+        if net_sign != 0.0:
+            newmatrix = copy.deepcopy(self.box.matrix)
+            newmatrix[0, 2] += net_sign * burgerm / 2.0
+            newlatt = Lattice(newmatrix)
+            self.box, symmop = lattice_2_lmpbox(newlatt)
+            self.atoms = lmpData.modify_by_symmetry(self.atoms, symmop)
+        else:
+            self.coords2fracts(normalization=False)
+
+        if add_vacuum:
+            self.add_vacuum(lvac=lvac, direction=direction, zero_coords=True)
 
 ########################################################################################################################
 
@@ -760,11 +893,26 @@ class Modlmp_LmpData(lmpData):
         Build a 6x6 stiffness matrix C (Voigt order [xx, yy, zz, yz, xz, xy]).
 
         Accepts either:
-          - {"C": <(6, 6) array-like>}                 full stiffness matrix
-          - {"C11": .., "C12": .., "C44": ..}          cubic constants
+          - {"C": <(6, 6) array-like>}                          full matrix
+          - {"C11": .., "C12": .., "C44": ..}                   cubic
+          - {"C11": .., "C12": .., "C13": .., "C33": .., "C44": ..}
+                                                                hexagonal (hcp)
 
         Units are whatever the caller uses; they must match the applied
         stress so that strain (= S . sigma) comes out dimensionless.
+
+        Notes
+        -----
+        The hexagonal form is *transversely isotropic about z*, so it is only
+        correct when the crystal c-axis lies along the box z-axis. That is the
+        case for cells built from the ``A3_ORTHO`` prototype (x=[2-1-10],
+        y=[01-10], z=[0001]); if you have re-oriented the cell, pass an
+        explicit 6x6 ``C`` instead.
+
+        Distinguishing hexagonal from cubic is done on the presence of C13/C33,
+        because the cubic key set {C11, C12, C44} is a strict subset of the
+        hexagonal one -- an hcp dict would otherwise be silently accepted as
+        cubic and give wrong lateral (Poisson) strains.
         """
         ec = dict(elastic_constants)
 
@@ -774,8 +922,29 @@ class Modlmp_LmpData(lmpData):
                 raise ValueError("elastic_constants['C'] must be a 6x6 matrix.")
             return C
 
-        needed = ("C11", "C12", "C44")
-        if all(k in ec for k in needed):
+        hexagonal = ("C11", "C12", "C13", "C33", "C44")
+        if all(k in ec for k in hexagonal):
+            c11 = float(ec["C11"])
+            c12 = float(ec["C12"])
+            c13 = float(ec["C13"])
+            c33 = float(ec["C33"])
+            c44 = float(ec["C44"])
+            # C66 is not independent for a hexagonal crystal, but honour an
+            # explicitly supplied value (e.g. a fitted, slightly off-symmetry
+            # tensor) rather than silently overwriting it.
+            c66 = float(ec.get("C66", 0.5 * (c11 - c12)))
+            C = np.zeros((6, 6), dtype=float)
+            C[0, 0] = C[1, 1] = c11
+            C[2, 2] = c33
+            C[0, 1] = C[1, 0] = c12
+            C[0, 2] = C[2, 0] = c13
+            C[1, 2] = C[2, 1] = c13
+            C[3, 3] = C[4, 4] = c44
+            C[5, 5] = c66
+            return C
+
+        cubic = ("C11", "C12", "C44")
+        if all(k in ec for k in cubic):
             c11 = float(ec["C11"])
             c12 = float(ec["C12"])
             c44 = float(ec["C44"])
@@ -790,8 +959,10 @@ class Modlmp_LmpData(lmpData):
             return C
 
         raise ValueError(
-            "elastic_constants must contain either a full 6x6 'C', or the "
-            "cubic constants 'C11', 'C12', 'C44'."
+            "elastic_constants must contain either a full 6x6 'C', the cubic "
+            "constants 'C11', 'C12', 'C44', or the hexagonal constants "
+            "'C11', 'C12', 'C13', 'C33', 'C44'. "
+            f"Got: {sorted(ec)}"
         )
 
     def scale_box(
@@ -842,9 +1013,14 @@ class Modlmp_LmpData(lmpData):
             (These reproduce tetr_dis and orth_dis as special cases.)
             Ignored in 'stress' mode and when all three axes are driven.
         elastic_constants : dict, required for mode='stress'
-            Either cubic constants ``{"C11": .., "C12": .., "C44": ..}`` or a
-            full 6x6 stiffness matrix ``{"C": <(6, 6)>}`` in Voigt order
-            [xx, yy, zz, yz, xz, xy]. Units must match the applied stress.
+            One of:
+              - cubic       ``{"C11": .., "C12": .., "C44": ..}``
+              - hexagonal   ``{"C11": .., "C12": .., "C13": .., "C33": ..,
+                               "C44": ..}`` -- for hcp; assumes the c-axis is
+                            along box z (true for the ``A3_ORTHO`` prototype)
+              - explicit    ``{"C": <(6, 6)>}`` full stiffness matrix
+            Voigt order [xx, yy, zz, yz, xz, xy]. Units must match the applied
+            stress. See ``_build_stiffness_matrix``.
         shear_stress : sequence of 3 floats
             Optional applied shear stresses (sigma_yz, sigma_xz, sigma_xy) for
             mode='stress'. Default (0, 0, 0). Non-zero values produce box tilt.

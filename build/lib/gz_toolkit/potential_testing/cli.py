@@ -2,8 +2,16 @@
 
 Usage::
 
-    # Initialize a fresh project (creates pot_inputs/, main.py, summarize.py).
+    # Initialize a fresh project (creates pot_inputs/, main.py, summarize.py, check.py).
     python -m gz_toolkit.potential_testing.cli init --root . --pot-name eam_fs
+
+    # Already have a hand-written pot_inputs/*.json and skipped `init`? This drops
+    # main.py / summarize.py / check.py into --root without touching pot_inputs/.
+    python -m gz_toolkit.potential_testing.cli write-scripts --root .
+
+    # Upgrade an existing project's summarize.py (e.g. to pull in SUMMARY_GROUPS
+    # from a newer gz_toolkit) without touching main.py/check.py:
+    python -m gz_toolkit.potential_testing.cli write-scripts --root . --force --only summarize.py
 
     # Plan + emit reference dirs and submit_all.sh (top-level driver, called by main.py).
     python -m gz_toolkit.potential_testing.cli run --pot-inputs pot_inputs --run-dir .
@@ -17,7 +25,14 @@ Usage::
     python -m gz_toolkit.potential_testing.cli scatter-cases \\
         --pot-config pot_inputs/eam_fs.json --run-dir .
 
-    # Aggregate results into a wide CSV (called by summarize.py).
+    # Once ONE potential's own tests are done: parse its logs into
+    # <run-dir>/<pot>/<pot>.json, and copy it to pot_infobank if configured
+    # (potential.promote_to_infobank in its JSON).
+    python -m gz_toolkit.potential_testing.cli summarize-pot \\
+        --pot-config pot_inputs/eam_fs.json --run-dir .
+
+    # Aggregate every pot's already-built <pot>.json into a wide CSV (called by
+    # summarize.py). Never re-parses logs — run summarize-pot per pot first.
     python -m gz_toolkit.potential_testing.cli summarize --pot-inputs pot_inputs --run-dir .
 """
 
@@ -42,8 +57,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_init.add_argument("--interactive", action="store_true",
                         help="Answer plain-language questions instead of editing JSON by hand")
 
+    p_ws = sub.add_parser(
+        "write-scripts",
+        help="Drop main.py/summarize.py/check.py into --root (for hand-written pot_inputs/ projects, "
+             "or to upgrade an existing project's scripts with --force)",
+    )
+    p_ws.add_argument("--root", default=".")
+    p_ws.add_argument("--force", action="store_true",
+                      help="Overwrite files that already exist with the current template "
+                           "(loses any hand edits to them)")
+    p_ws.add_argument("--only", nargs="+", choices=["main.py", "summarize.py", "check.py"],
+                      help="Only touch these files (default: all three)")
+
     p_val = sub.add_parser("validate", help="Check every config for mistakes before submitting")
     p_val.add_argument("--pot-inputs", default="pot_inputs")
+
+    p_chk = sub.add_parser(
+        "check",
+        help="Cross-check potential_files/pot_lines against potentials/<pot>/ and built case dirs",
+    )
+    p_chk.add_argument("--pot-inputs", default="pot_inputs")
+    p_chk.add_argument("--run-dir", default=".")
 
     p_st = sub.add_parser("status", help="Show done/failed/running/pending counts per work group")
     p_st.add_argument("--pot-inputs", default="pot_inputs")
@@ -64,7 +98,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_sc.add_argument("--run-dir", default=".")
     p_sc.add_argument("--pot-inputs", default="pot_inputs")
 
-    p_sum = sub.add_parser("summarize", help="Write wide-format summary.csv")
+    p_sp = sub.add_parser("summarize-pot", help="Build one pot's <pot_name>.json (and promote it, if configured)")
+    p_sp.add_argument("--pot-config", required=True)
+    p_sp.add_argument("--run-dir", default=".")
+
+    p_sum = sub.add_parser("summarize", help="Write wide-format summary.csv from already-built <pot_name>.json files")
     p_sum.add_argument("--pot-inputs", default="pot_inputs")
     p_sum.add_argument("--run-dir", default=".")
 
@@ -109,6 +147,38 @@ def main(argv: list[str] | None = None) -> int:
         print("\nAll configs valid.")
         return 0
 
+    if args.command == "write-scripts":
+        from gz_toolkit.potential_testing.project import write_driver_scripts
+        written = write_driver_scripts(args.root, force=args.force, only=args.only)
+        if written:
+            for p in written:
+                print(f"Wrote {p}")
+        else:
+            print("Nothing to do — files already exist (use --force to overwrite).")
+        return 0
+
+    if args.command == "check":
+        from gz_toolkit.potential_testing.check import check_project
+        report = check_project(args.pot_inputs, run_dir=args.run_dir)
+        n_errors = 0
+        for pot_name, findings in report.items():
+            print(f"{pot_name}:")
+            if not findings:
+                print("  OK")
+                continue
+            for level, msg in findings:
+                if level == "error":
+                    n_errors += 1
+                    prefix = "  - "
+                else:
+                    prefix = "  [info] "
+                print(prefix + msg.replace("\n", "\n    "))
+        if n_errors:
+            print(f"\n{n_errors} problem(s) found — fix them before submitting.")
+            return 1
+        print("\nAll potential files check out.")
+        return 0
+
     if args.command == "status":
         from gz_toolkit.potential_testing.status import collect_status, format_status_table
         configs = load_potential_configs(args.pot_inputs)
@@ -140,6 +210,17 @@ def main(argv: list[str] | None = None) -> int:
         cfg = load_potential_config(args.pot_config)
         written = scatter_cases(cfg, Path(args.run_dir).resolve(), Path(args.pot_inputs).resolve())
         print(f"Scatter wrote {len(written)} per-case .job files (and attempted sbatch).")
+        return 0
+
+    if args.command == "summarize-pot":
+        from gz_toolkit.potential_testing.summary import build_pot_tag_json
+        from gz_toolkit.pot_infobank import promote_tag_json
+        cfg = load_potential_config(args.pot_config)
+        tag_path = build_pot_tag_json(cfg, run_dir=args.run_dir)
+        print(f"Wrote {tag_path}")
+        dest = promote_tag_json(cfg, run_dir=args.run_dir)
+        if dest:
+            print(f"Promoted to {dest}")
         return 0
 
     if args.command == "summarize":

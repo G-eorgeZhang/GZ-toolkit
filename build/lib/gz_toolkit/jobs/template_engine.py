@@ -8,10 +8,15 @@ A job file has three logical sections:
 
 Templates use ``{{PLACEHOLDER}}`` markers that get substituted at render time.
 Cluster-specific defaults (cores per node, partition, etc.) are loaded from
-CSV files shipped under ``gz_toolkit/jobs/cluster_info/``.
+CSV files shipped under ``gz_toolkit/jobs/cluster_info/<CLUSTER>/<CLUSTER>.csv``.
+Each cluster directory may also carry a ``meta.json`` for machine-level facts
+that aren't partition-specific — currently just ``path2gz_toolkit``, the
+install location ``gz_toolkit.pot_infobank`` promotion writes into (constant
+per cluster, so it lives here instead of in every per-potential JSON).
 """
 
 import csv
+import json
 import os
 
 
@@ -66,12 +71,12 @@ def load_cluster_info(cluster_name):
         Maps partition key (e.g. ``"campus"``, ``"group"``) to a dict of
         ``{partition, qos, account, cores_per_node, max_walltime, key}``.
     """
-    fname = f"{cluster_name.upper()}.csv"
-    fpath = os.path.join(_CLUSTER_INFO_DIR, fname)
+    name = cluster_name.upper()
+    fpath = os.path.join(_CLUSTER_INFO_DIR, name, f"{name}.csv")
     if not os.path.isfile(fpath):
         raise FileNotFoundError(
             f"Cluster info file '{fpath}' not found.  "
-            f"Create a CSV in gz_toolkit/jobs/cluster_info/{fname} with columns: "
+            f"Create a CSV in gz_toolkit/jobs/cluster_info/{name}/{name}.csv with columns: "
             "partition,qos,account,cores_per_node,max_walltime,key"
         )
 
@@ -90,11 +95,28 @@ def load_cluster_info(cluster_name):
     return presets
 
 
+def load_cluster_meta(cluster_name):
+    """
+    Load machine-level metadata for one cluster from ``<CLUSTER>/meta.json``.
+
+    Currently just ``path2gz_toolkit`` (the gz_toolkit install location on
+    that cluster, used by ``gz_toolkit.pot_infobank`` to resolve where to
+    promote a potential's ``<pot_name>.json``). Returns ``{}`` if the cluster has no
+    ``meta.json`` — callers should treat missing keys as "not configured",
+    not an error.
+    """
+    fpath = os.path.join(_CLUSTER_INFO_DIR, cluster_name.upper(), "meta.json")
+    if not os.path.isfile(fpath):
+        return {}
+    with open(fpath, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
 def list_available_machines():
     """
     Return available machine names discovered from:
       - templates/machines/*.job
-      - cluster_info/*.csv
+      - cluster_info/<CLUSTER>/<CLUSTER>.csv
     """
     names = set()
     if os.path.isdir(_MACHINE_TEMPLATES_DIR):
@@ -103,9 +125,10 @@ def list_available_machines():
                 names.add(os.path.splitext(fn)[0].upper())
 
     if os.path.isdir(_CLUSTER_INFO_DIR):
-        for fn in os.listdir(_CLUSTER_INFO_DIR):
-            if fn.lower().endswith(".csv"):
-                names.add(os.path.splitext(fn)[0].upper())
+        for dn in os.listdir(_CLUSTER_INFO_DIR):
+            cluster_dir = os.path.join(_CLUSTER_INFO_DIR, dn)
+            if os.path.isdir(cluster_dir) and os.path.isfile(os.path.join(cluster_dir, f"{dn.upper()}.csv")):
+                names.add(dn.upper())
 
     return sorted(names)
 

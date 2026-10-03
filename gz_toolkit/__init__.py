@@ -1,9 +1,10 @@
 """
-GZ-toolkit (import name: gz_toolkit) — LAMMPS structure manipulation toolkit.
+GZ-toolkit (import name: gz_toolkit) — atomistic structures and potential workflows.
 
 Provides tools for building crystal structures, creating defects
 (voids, dislocation loops, Frenkel pairs), and merging atomistic
-configurations for LAMMPS molecular dynamics simulations.
+configurations for LAMMPS molecular dynamics simulations, HPC potential testing,
+and guided EAM/FS/HE potential generation.
 
 Submodules are imported lazily (PEP 562): ``import gz_toolkit`` is cheap,
 and heavy dependencies (pymatgen, pandas) are only loaded when the
@@ -12,10 +13,14 @@ corresponding attribute is first accessed.
 
 import importlib
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # Map of public attribute -> submodule that provides it.
 _LAZY_ATTRS = {
+    # EAM/FS/HE potential generation
+    "EAMModel": "gz_toolkit.eamGen",
+    "FitOptions": "gz_toolkit.eamGen",
+    "fit_model": "gz_toolkit.eamGen",
     # Core
     "Modlmp_LmpData": "gz_toolkit.core.modlmp",
     # Crystal builder

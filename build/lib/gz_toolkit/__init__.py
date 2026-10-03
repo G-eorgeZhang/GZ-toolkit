@@ -43,6 +43,17 @@ _LAZY_ATTRS = {
     "run_workflow": "gz_toolkit.potential_testing",
     "run_all": "gz_toolkit.potential_testing",
     "summarize_all": "gz_toolkit.potential_testing",
+    "build_pot_tag_json": "gz_toolkit.potential_testing",
+    "write_grouped_summaries": "gz_toolkit.potential_testing",
+    # Pot infobank
+    "promote_tag_json": "gz_toolkit.pot_infobank",
+    "load_tag": "gz_toolkit.pot_infobank",
+    "get_lc": "gz_toolkit.pot_infobank",
+    # Analyze — energy/elastic-modulus formulas
+    "formation_energy": "gz_toolkit.analyze",
+    "binding_energy": "gz_toolkit.analyze",
+    "cohesive_energy": "gz_toolkit.analyze",
+    "voigt_moduli": "gz_toolkit.analyze",
 }
 
 __all__ = list(_LAZY_ATTRS)

@@ -118,10 +118,17 @@ def run_init_wizard(root: str | Path = ".", *, input_fn=input, print_fn=print) -
         pot_lines_list.append(line)
     pot_lines = "\n".join(pot_lines_list)
 
-    pot_file = _ask("Potential file name to copy into every run dir "
-                    "(e.g. Fe.eam.fs; type 'none' if everything is in the pair lines)",
-                    default="none", input_fn=input_fn, print_fn=print_fn)
-    potential_files = [] if pot_file.lower() == "none" else [pot_file]
+    print_fn("")
+    print_fn("Potential file(s) to copy into every run dir, e.g. Fe.eam.fs")
+    print_fn("(some potentials need more than one file, e.g. a .meam + a library.meam).")
+    print_fn("Type each filename, then an empty line to finish (leave blank right away "
+              "if everything is in the pair lines).")
+    potential_files: list[str] = []
+    while True:
+        fname = input_fn("potential file (empty = done): ").strip()
+        if not fname:
+            break
+        potential_files.append(fname)
 
     # ---- elements ------------------------------------------------------------
     print_fn("")
@@ -199,6 +206,34 @@ def run_init_wizard(root: str | Path = ".", *, input_fn=input, print_fn=print) -
                     "  (one random arrangement on a small cell — treat as an estimate)",
                     default=False, input_fn=input_fn, print_fn=print_fn)
 
+    multi_element_suites: list[dict] = []
+    if len(metals) >= 3:
+        if _ask_yesno(f"Also test a fixed {'/'.join(metals)} multi-element "
+                      f"composition (3+ elements)?",
+                      default=False, input_fn=input_fn, print_fn=print_fn):
+            wf.include_alloy_suite = True
+            print_fn("Give the at.% for each element; leave blank to split the "
+                      "remainder evenly across every blank entry.")
+            comp: dict[str, float | None] = {}
+            for el in metals:
+                while True:
+                    raw = input_fn(f"  {el} at.% (blank = rest): ").strip()
+                    if not raw:
+                        comp[el] = None
+                        break
+                    try:
+                        comp[el] = float(raw)
+                        break
+                    except ValueError:
+                        print_fn(f"  '{raw}' is not a number — leave blank for "
+                                  f"'rest' or type a number.")
+            multi_element_suites.append({"composition": comp, "ordering": "random"})
+            if wf.include_elastic:
+                wf.elastic_for_alloys = wf.elastic_for_alloys or _ask_yesno(
+                    "Also compute elastic constants for this composition?\n"
+                    "  (one random arrangement on a small cell — treat as an estimate)",
+                    default=False, input_fn=input_fn, print_fn=print_fn)
+
     if gases:
         wf.include_gas_complexes = _ask_yesno(
             f"Gas-defect complexes (e.g. {gases[0]}-vacancy clusters) with binding energies?",
@@ -215,17 +250,61 @@ def run_init_wizard(root: str | Path = ".", *, input_fn=input, print_fn=print) -
     # ---- cluster ------------------------------------------------------------------
     print_fn("")
     print_fn("--- Cluster settings ---")
+    print_fn("Defaults below match the ISAAC/mtp_env setup — press Enter to accept "
+              "each one, or type a new value.")
     hpc = HPCOptions()
-    cluster = _ask("Cluster name (e.g. ISAAC; 'none' for a generic SLURM script)",
-                   default="none", input_fn=input_fn, print_fn=print_fn)
+
+    hpc.mode = _ask("Submission mode (scatter/batch)", default="scatter",
+                    choices=("scatter", "batch"), input_fn=input_fn, print_fn=print_fn)
+    cluster = _ask("Cluster name ('none' for a generic SLURM script)",
+                   default="ISAAC", input_fn=input_fn, print_fn=print_fn)
     hpc.cluster = None if cluster.lower() == "none" else cluster
-    hpc.ntasks = _ask("CPU cores per job", default=40, parse=int,
+    partition_key = _ask("Partition key ('none' for no partition flag)",
+                         default="s", input_fn=input_fn, print_fn=print_fn)
+    hpc.partition_key = None if partition_key.lower() == "none" else partition_key
+    hpc.walltime = _ask("Time limit per job (HH:MM:SS)", default="3:00:00",
+                        validate=lambda s: None if re.match(r"^\d+:\d{2}:\d{2}$", s)
+                        else "Format must be like 3:00:00.",
+                        input_fn=input_fn, print_fn=print_fn)
+    hpc.nodes = _ask("Nodes per job", default=1, parse=int,
+                     validate=lambda v: None if v >= 1 else "At least 1.",
+                     input_fn=input_fn, print_fn=print_fn)
+    hpc.ntasks = _ask("CPU cores per job", default=48, parse=int,
                       validate=lambda v: None if v >= 1 else "At least 1.",
                       input_fn=input_fn, print_fn=print_fn)
-    hpc.walltime = _ask("Time limit per job (HH:MM:SS)", default="24:00:00",
-                        validate=lambda s: None if re.match(r"^\d+:\d{2}:\d{2}$", s)
-                        else "Format must be like 24:00:00.",
-                        input_fn=input_fn, print_fn=print_fn)
+    hpc.output_name = _ask("Job script filename", default="run.job",
+                           input_fn=input_fn, print_fn=print_fn)
+    hpc.batch_max_per_file = _ask("Max sims batched per .job file", default=50, parse=int,
+                                  validate=lambda v: None if v >= 1 else "At least 1.",
+                                  input_fn=input_fn, print_fn=print_fn)
+    hpc.max_jobs_per_batch = _ask("Hard cap on sims per batch job (site-imposed)",
+                                  default=200, parse=int,
+                                  validate=lambda v: None if v >= 1 else "At least 1.",
+                                  input_fn=input_fn, print_fn=print_fn)
+    hpc.run_command = _ask("LAMMPS run command "
+                           "({{NTASKS}}, {{INPUT}}, {{LAMMPS_BIN}} are placeholders)",
+                           default="srun -n {{NTASKS}} {{LAMMPS_BIN}} -in {{INPUT}}",
+                           input_fn=input_fn, print_fn=print_fn)
+    hpc.device = _ask("Device", default="cpu", choices=("cpu", "gpu"),
+                      input_fn=input_fn, print_fn=print_fn)
+    hpc.gpus_per_node = _ask("GPUs per node", default=0, parse=int,
+                             validate=lambda v: None if v >= 0 else "Cannot be negative.",
+                             input_fn=input_fn, print_fn=print_fn)
+    modules_raw = _ask("Modules to load, comma-separated (blank for none)",
+                       default="", input_fn=input_fn, print_fn=print_fn)
+    hpc.modules = [m.strip() for m in modules_raw.split(",") if m.strip()]
+    conda_env = _ask("Conda env to activate ('none' to skip)",
+                     default="/lustre/isaac24/scratch/qzhang55/myVenvs/mtp_env",
+                     input_fn=input_fn, print_fn=print_fn)
+    hpc.conda_env = None if conda_env.lower() == "none" else conda_env
+    lammps_binary_path = _ask("Path to lmp_mpi binary ('none' to use PATH)",
+                              default="~/bins/lmp_mpi",
+                              input_fn=input_fn, print_fn=print_fn)
+    hpc.lammps_binary_path = None if lammps_binary_path.lower() == "none" else lammps_binary_path
+    lammps_src_path = _ask("LAMMPS src/ dir for LD_LIBRARY_PATH ('none' to skip)",
+                           default="/lustre/isaac24/scratch/qzhang55/MLIPs/lammps/src",
+                           input_fn=input_fn, print_fn=print_fn)
+    hpc.lammps_src_path = None if lammps_src_path.lower() == "none" else lammps_src_path
 
     print_fn("")
     print_fn("How parallel should the runs be?")
@@ -246,6 +325,7 @@ def run_init_wizard(root: str | Path = ".", *, input_fn=input, print_fn=print) -
             single_elements=metals,
             gases=gases,
             two_element_suites=two_element_suites,
+            multi_element_suites=multi_element_suites,
             crystal_structures=crystal_structures,
             lc_initial=float(lc_initial),
             potential_files=potential_files,
@@ -273,10 +353,11 @@ def run_init_wizard(root: str | Path = ".", *, input_fn=input, print_fn=print) -
     print_fn("Next steps:")
     if potential_files:
         print_fn(f"  1. Copy {', '.join(potential_files)} into potentials/{pot_name}/")
-        print_fn("  2. On the cluster, run:  python main.py")
-        print_fn("  3. Then submit:          bash submit_all.sh")
-        print_fn("  4. Check progress:       python -m gz_toolkit.potential_testing.cli status")
-        print_fn("  5. When done, summarize: python summarize.py")
+        print_fn("  2. Sanity-check them:    python check.py")
+        print_fn("  3. On the cluster, run:  python main.py")
+        print_fn("  4. Then submit:          bash submit_all.sh")
+        print_fn("  5. Check progress:       python -m gz_toolkit.potential_testing.cli status")
+        print_fn("  6. When done, summarize: python summarize.py")
     else:
         print_fn("  1. On the cluster, run:  python main.py")
         print_fn("  2. Then submit:          bash submit_all.sh")

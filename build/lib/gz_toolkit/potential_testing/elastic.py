@@ -19,9 +19,10 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
-from gz_toolkit.potential_testing.config import PotentialConfig
+from gz_toolkit.potential_testing.config import PotentialConfig, resolve_composition
 from gz_toolkit.potential_testing.structure_ops import (
     build_alloy_structure,
+    build_multi_alloy_structure,
     build_reference_structure,
 )
 
@@ -84,9 +85,10 @@ def build_elastic_cases(
     Cases:
       * one per element in ``single_elements`` (cell at the relaxed lc,
         ``size_elastic`` replications);
-      * one per alloy composition in ``two_element_suites`` when both
-        ``include_elastic`` and ``elastic_for_alloys`` are set
-        (single random realization at ``size_elastic_alloy`` — an estimate).
+      * one per alloy composition in ``two_element_suites`` and
+        ``multi_element_suites`` when both ``include_elastic`` and
+        ``elastic_for_alloys`` are set (single random realization at
+        ``size_elastic_alloy`` — an estimate).
 
     Returns manifest entries mirroring the other work groups.
     """
@@ -146,5 +148,32 @@ def build_elastic_cases(
                     "A": A, "B": B, "fraction_B": frac, "case": "elastic_alloy",
                     "dir": str(case_dir.relative_to(project_root)),
                 })
+
+        for suite in config.potential.multi_element_suites:
+            composition_raw = suite.get("composition", {})
+            if not isinstance(composition_raw, dict) or len(composition_raw) < 2:
+                continue
+            try:
+                composition = resolve_composition(composition_raw)
+            except ValueError:
+                continue  # already reported by validate_config
+            suite_elements = list(composition.keys())
+            host = suite_elements[0]
+            ordering = suite.get("ordering", "random")
+            struct = suite.get("structure") or config.potential.crystal_structures.get(host, {}).get("structure", "bcc")
+            lc_host = per_element_lc.get(host, config.potential.lc_initial)
+            pair_tag = "".join(suite_elements)
+            comp_tag = "_".join(f"{el}{int(round(pct))}" for el, pct in composition.items())
+            case_dir = pot_dir / "elastic" / f"{pair_tag}_{comp_tag}"
+            _setup(case_dir)
+            build_multi_alloy_structure(
+                case_dir, config, composition, struct,
+                ordering=ordering, relaxed_lc_host=lc_host,
+                n_replicate=config.potential.size_elastic_alloy,
+            )
+            manifest.append({
+                "composition": composition, "case": "elastic_alloy_multi",
+                "dir": str(case_dir.relative_to(project_root)),
+            })
 
     return manifest

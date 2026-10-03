@@ -13,6 +13,7 @@ from gz_toolkit.jobs.directory import DirectoryManager
 from gz_toolkit.jobs.template_engine import (
     JobTemplate,
     load_cluster_info,
+    load_cluster_meta,
     list_available_machines,
 )
 from gz_toolkit.jobs.submission import ScatterSubmitter, PatchSubmitter
@@ -22,6 +23,7 @@ __all__ = [
     "DirectoryManager",
     "JobTemplate",
     "load_cluster_info",
+    "load_cluster_meta",
     "list_available_machines",
     "ScatterSubmitter",
     "PatchSubmitter",

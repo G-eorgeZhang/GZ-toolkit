@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "GZ-toolkit"
-version = "0.1.0"
-description = "LAMMPS structure manipulation toolkit for building crystals, creating defects, and merging atomistic configurations."
+version = "0.2.0"
+description = "Atomistic structure tools, HPC potential testing, and guided EAM/FS/HE potential generation."
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Zhang" }]
@@ -38,11 +38,13 @@ dev = ["pytest", "pytest-cov"]
 
 [project.scripts]
 gz-toolkit-potential-testing = "gz_toolkit.potential_testing.main:main"
+gz-toolkit-eamgen = "gz_toolkit.eamGen.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["gz_toolkit*"]
 
 [tool.setuptools.package-data]
+"gz_toolkit.eamGen" = ["skills/eamgen/SKILL.md", "skills/eamgen/references/*.md"]
 gz_toolkit = [
     "jobs/templates/*.job",
     "jobs/templates/machines/*.job",
