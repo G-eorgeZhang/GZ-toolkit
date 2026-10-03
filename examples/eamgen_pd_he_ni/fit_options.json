@@ -1,0 +1,14 @@
+{
+  "embedding_keys": ["Ni"],
+  "pair_keys": ["Ni-Pd", "He-Ni", "Ni-Ni"],
+  "density_keys": [],
+  "knots": 8,
+  "radial_min": 0.75,
+  "energy_scale": 0.02,
+  "force_scale": 0.1,
+  "stress_scale": 0.01,
+  "regularization": 0.01,
+  "coefficient_bound": 10.0,
+  "max_evaluations": 200,
+  "max_parameters": 500
+}

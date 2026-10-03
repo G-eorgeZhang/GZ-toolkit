@@ -1,0 +1,5 @@
+[
+  {"symbol": "Pd", "atomic_number": 46, "mass": 106.42, "lattice_constant": 3.89, "lattice": "FCC"},
+  {"symbol": "He", "atomic_number": 2, "mass": 4.0026, "lattice_constant": 0.0, "lattice": "none"},
+  {"symbol": "Ni", "atomic_number": 28, "mass": 58.6934, "lattice_constant": 3.52, "lattice": "FCC"}
+]

@@ -1,0 +1,10 @@
+[
+  {"component": "pair", "key": "He-Pd", "form": "zhou_repulsive_pair", "parameters": {"E0": 0.155004, "alpha": 3.427897, "r0": 2.586950, "rs": 6.004509, "rc": 7.0}, "bounds": {}, "source": "10.1103/PhysRevB.103.014108, Eq. 1, Table II, FS parameters"},
+  {"component": "pair", "key": "H-He", "form": "zhou_repulsive_pair", "parameters": {"E0": 0.023764, "alpha": 10.746122, "r0": 1.511214, "rs": 2.559378, "rc": 3.8101384}, "bounds": {}, "source": "10.1103/PhysRevB.103.014108, Eq. 1, Table II, FS parameters"},
+  {"component": "pair", "key": "He-He", "form": "zhou_he_core_pair", "parameters": {"alpha": 39.2759392, "beta": -4.0879424, "r0": 1.7213068}, "bounds": {}, "source": "10.1103/PhysRevB.103.014108, Eq. 6, Table II, FS parameters (beta is negative in table)"},
+  {"component": "density", "key": "Pd<-He", "form": "zhou_density", "parameters": {"amplitude": 2.3805680, "gamma": 0.8271817, "rs": 6.0267311, "rc": 7.0}, "bounds": {}, "source": "10.1103/PhysRevB.103.014108, Eq. 4, Table II, donor He -> receiver Pd"},
+  {"component": "density", "key": "H<-He", "form": "zhou_density", "parameters": {"amplitude": 4.6702433, "gamma": 0.8556600, "rs": 2.1333591, "rc": 5.1412935}, "bounds": {}, "source": "10.1103/PhysRevB.103.014108, Eq. 4, Table II, donor He -> receiver H"},
+  {"component": "density", "key": "He<-He", "form": "zhou_density", "parameters": {"amplitude": 101.9554550, "gamma": 0.4212486, "rs": 1.5930120, "rc": 4.3285791}, "bounds": {}, "source": "10.1103/PhysRevB.103.014108, Eq. 4, Table II, donor He -> receiver He"},
+  {"component": "density", "key": "He<-Pd", "form": "zhou_density", "parameters": {"amplitude": -21.6766656, "gamma": 0.4897542, "rs": 3.1468368, "rc": 4.0352370}, "bounds": {}, "source": "10.1103/PhysRevB.103.014108, Eq. 4, Table II, donor Pd -> receiver He"},
+  {"component": "embedding", "key": "He", "form": "zhou_he_embedding", "parameters": {"F0": 1.4084678, "F2": 0.000002829678, "F3": 0.00000001001682, "rho0": -39.9507951}, "bounds": {}, "source": "10.1103/PhysRevB.103.014108, Eq. 7, Table II"}
+]

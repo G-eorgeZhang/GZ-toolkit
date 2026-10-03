@@ -1,0 +1,5 @@
+include README.md INSTALL.md CHANGELOG.md
+recursive-include examples *.md *.json *.job *.py
+recursive-include gz_toolkit/eamGen/skills *.md
+include tests/test_eamgen.py
+global-exclude __pycache__ *.py[cod]

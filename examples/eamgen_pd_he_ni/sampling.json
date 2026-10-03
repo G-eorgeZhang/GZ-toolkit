@@ -1,0 +1,9 @@
+[
+  {"name": "Pd_eos_train", "host": "Pd", "lattice_constant": 3.89, "lattice": "fcc", "repetitions": 2, "scales": [0.95, 1.0, 1.05], "seed": 0},
+  {"name": "Ni_eos_train", "host": "Ni", "lattice_constant": 3.52, "lattice": "fcc", "repetitions": 2, "scales": [0.95, 1.0, 1.05], "seed": 1},
+  {"name": "PdNi50_train", "host": "Pd", "lattice_constant": 3.7, "composition": {"Pd": 0.5, "Ni": 0.5}, "repetitions": 2, "displacement": 0.03, "seed": 2},
+  {"name": "NiHe_tetra_train", "host": "Ni", "lattice_constant": 3.52, "gas": "He", "gas_site": "tetra", "repetitions": 2, "seed": 3},
+  {"name": "NiHe_octa_validation", "host": "Ni", "lattice_constant": 3.52, "gas": "He", "gas_site": "octa", "repetitions": 2, "seed": 4, "split": "validation"},
+  {"name": "PdNi25_validation", "host": "Pd", "lattice_constant": 3.8, "composition": {"Pd": 0.75, "Ni": 0.25}, "repetitions": 2, "displacement": 0.03, "seed": 5, "split": "validation"},
+  {"name": "PdNiHe_vacancy_test", "host": "Pd", "lattice_constant": 3.7, "composition": {"Pd": 0.5, "Ni": 0.5}, "gas": "He", "vacancy": true, "repetitions": 2, "seed": 6, "split": "test"}
+]

@@ -1,0 +1,18 @@
+{
+  "source": "https://doi.org/10.1103/PhysRevB.103.014108",
+  "title": "Enabling simulations of helium bubble nucleation and growth: A strategy for interatomic potentials",
+  "locator": "Table III, printed page 014108-7",
+  "role": "Reference observations only. Human must select fit/validation roles and tolerances; FS baseline values are not DFT targets.",
+  "conditions": "H-free FCC Pd unless stated. Paper PBE DFT uses a cubic 108-Pd cell, >=6x6x6 k mesh, 500 eV cutoff, 0.2 eV Methfessel-Paxton width, force tolerance <0.001 eV/Angstrom and relaxed cell. Paper molecular statics uses 5x5x5 FCC cells (6x6x6 for rocksalt).",
+  "observations": [
+    {"property": "He octa-to-octa migration barrier", "units": "eV", "FS_potential": 0.13, "PBE_DFT": 0.11, "LDA_DFT": 0.07, "definition": "NEB between nearest octahedral sites; paths and method must match"},
+    {"property": "Single He swelling volume", "units": "Angstrom^3/He", "FS_potential": 7.0, "PBE_DFT": 9.7, "LDA_DFT": 7.3, "definition": "Relaxed volume with one interstitial He minus relaxed pure Pd volume"},
+    {"property": "Second He incremental swelling volume", "units": "Angstrom^3/He", "FS_potential": 14.1, "PBE_DFT": 10.3, "LDA_DFT": 8.0, "definition": "Second He at nearest octahedral site to first He"},
+    {"property": "He insertion energy", "testing_metric": "Ef_He_in_Pd_octa", "units": "eV/He", "FS_potential": 4.42, "PBE_DFT": 3.64, "LDA_DFT": 3.63, "definition": "Relaxed energy difference with/without He and isolated-He reference; reconcile chemical-potential conventions"},
+    {"property": "He dimer bond length in Pd", "units": "Angstrom", "FS_potential": 1.67, "PBE_DFT": 1.7, "LDA_DFT": 1.7, "definition": "Relaxed nearest-neighbor interstitial dimer; not gas-phase He2"},
+    {"property": "He dimer binding energy in Pd", "units": "eV", "FS_potential": -2.00, "PBE_DFT": -0.87, "LDA_DFT": -0.85, "definition": "E2 + E0 - 2 E1; negative means favorable binding"},
+    {"property": "Pd to rocksalt PdHe volume change", "units": "Angstrom^3/He", "FS_potential": 10.5, "PBE_DFT": 6.7, "LDA_DFT": 7.4, "definition": "Per-He difference from pure Pd; phase comparison"},
+    {"property": "Pd to rocksalt PdHe energy change", "units": "eV/He", "FS_potential": 3.35, "PBE_DFT": 2.99, "LDA_DFT": 2.96, "definition": "Per-He difference relative to FCC Pd and isolated He"}
+  ],
+  "additional_validation": {"He_equation_of_state": "Paper Fig. 5 and Section V.B: fluid EOS, 300 K, pressures 1-22 kbar. Pure-He behavior must be validated separately from gas interactions in metals.", "Ni_He": "No Ni-He target values are supplied by this paper. Obtain independent converged Ni-He reference data."}
+}

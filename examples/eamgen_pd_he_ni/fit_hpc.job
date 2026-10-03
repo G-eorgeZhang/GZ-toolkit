@@ -1,0 +1,21 @@
+#!/bin/bash
+#SBATCH --job-name=eamgen-fit
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=16G
+#SBATCH --time=04:00:00
+#SBATCH --output=eamgen-fit-%j.out
+
+# Review partition/account/modules/Python environment and resource requests
+# for your cluster before submission. No job is submitted by this template.
+# Example, after configuring the cluster environment:
+# sbatch --export=ALL,EAMGEN_PROJECT=/path/to/project,EAMGEN_REVISION=r001 fit_hpc.job
+set -euo pipefail
+cd "${SLURM_SUBMIT_DIR:?Submit from the toolkit/project environment}"
+: "${EAMGEN_PROJECT:?Set the fitting project directory}"
+: "${EAMGEN_REVISION:?Set a fresh revision name}"
+export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
+export OPENBLAS_NUM_THREADS="$OMP_NUM_THREADS"
+export MKL_NUM_THREADS="$OMP_NUM_THREADS"
+python -m gz_toolkit.eamGen fit --root "$EAMGEN_PROJECT" --revision "$EAMGEN_REVISION"
