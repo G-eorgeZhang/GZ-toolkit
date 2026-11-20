@@ -26,8 +26,8 @@ Usage::
         --pot-config pot_inputs/eam_fs.json --run-dir .
 
     # Once ONE potential's own tests are done: parse its logs into
-    # <run-dir>/<pot>/<pot>.json, and copy it to pot_infobank if configured
-    # (potential.promote_to_infobank in its JSON).
+    # <run-dir>/<pot>/<pot>.json, and save it (with the potential files, pot.inc
+    # and README.md) to the pot_infobank if potinfo_savepath in settings.json says so.
     python -m gz_toolkit.potential_testing.cli summarize-pot \\
         --pot-config pot_inputs/eam_fs.json --run-dir .
 
@@ -201,6 +201,9 @@ def main(argv: list[str] | None = None) -> int:
         manifest = build_defects_post_reference(cfg, run_dir=args.run_dir)
         print(f"Built {len(manifest['point_defects'])} point defects, "
               f"{len(manifest.get('elastic', []))} elastic cases, "
+              f"{len(manifest.get('thermal_lc', []))} thermal-lc cases, "
+              f"{len(manifest.get('benchmarks', []))} extended benchmark cases, "
+              f"{len(manifest.get('neb', []))} NEB paths, "
               f"{len(manifest['loops'])} loops, {len(manifest['alloys'])} alloy cases, "
               f"{len(manifest['gas_complexes'])} gas-complex cases.")
         return 0
@@ -214,13 +217,13 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "summarize-pot":
         from gz_toolkit.potential_testing.summary import build_pot_tag_json
-        from gz_toolkit.pot_infobank import promote_tag_json
+        from gz_toolkit.pot_infobank import save_potinfo
         cfg = load_potential_config(args.pot_config)
         tag_path = build_pot_tag_json(cfg, run_dir=args.run_dir)
         print(f"Wrote {tag_path}")
-        dest = promote_tag_json(cfg, run_dir=args.run_dir)
+        dest = save_potinfo(cfg, run_dir=args.run_dir)
         if dest:
-            print(f"Promoted to {dest}")
+            print(f"Saved potential info to {dest}")
         return 0
 
     if args.command == "summarize":

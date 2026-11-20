@@ -17,6 +17,11 @@ A concrete subclass supplies the crystallography through three hooks:
         spacing. The invariant ``k * d_layer == |b|`` must hold -- it is
         what makes the inserted platelet continue the stacking.
 
+    _partial_insert_offset(family, n_cubic, a, n_layers) -> (3,) vector
+        Optional. In-plane (cubic-frame) shift for an inserted platelet of
+        fewer than ``k`` layers, which is not a lattice translation. Only
+        needed by families that list such counts in ``allowed_layers``.
+
     _interstitial_offsets(lattice_const) -> (m, 3) Cartesian offsets
         Candidate interstitial sites relative to a host atom.
 
@@ -66,6 +71,9 @@ class LatticeDefect:
     #:   k           : atomic layers spanned by one Burgers repeat
     #:   d_layer     : a -> interplanar spacing
     #:   description : short human-readable summary
+    #:   allowed_layers : optional tuple of selectable layer counts (``n_layers``);
+    #:                 defaults to (k,). A count below k inserts/removes a
+    #:                 faulted platelet whose displacement is not a lattice vector.
     #: The invariant k * d_layer == |b| is enforced at lookup time.
     LOOP_FAMILIES: dict[str, dict] = {}
 
@@ -107,6 +115,36 @@ class LatticeDefect:
                 f"k*d_layer = {k * d_layer:.6f} but |b| = {b_mag:.6f}."
             )
         return n, b_mag, k, d_layer
+
+    @classmethod
+    def _resolve_n_layers(cls, family, n_layers, k: int, n_repeats: int) -> int:
+        """Validate the requested layer count against the family's allowed_layers."""
+        if n_layers is None:
+            return int(k)
+        fam = str(family).replace("<", "").replace(">", "").strip()
+        spec = cls.LOOP_FAMILIES[fam]
+        allowed = tuple(int(x) for x in spec.get("allowed_layers", (k,)))
+        try:
+            n_lay = int(n_layers)
+        except (TypeError, ValueError):
+            raise ValueError(f"n_layers must be an integer, got {n_layers!r}.") from None
+        if n_lay != n_layers or n_lay not in allowed:
+            raise ValueError(
+                f"n_layers={n_layers!r} is not available for the {cls.lattice_name} "
+                f"<{spec['label']}> loop; choose one of {list(allowed)}."
+            )
+        if n_lay != k and int(n_repeats) != 1:
+            raise ValueError(
+                f"n_layers={n_lay} (a partial, faulted platelet) needs n_repeats=1; "
+                f"n_repeats stacks whole {k}-layer Burgers repeats."
+            )
+        return n_lay
+
+    def _partial_insert_offset(self, family, n_cubic, a: float, n_layers: int) -> np.ndarray:
+        """In-plane cubic-frame shift for a platelet of fewer than k layers."""
+        raise NotImplementedError(
+            f"{self.lattice_name} does not define a {n_layers}-layer <{family}> insert."
+        )
 
     @staticmethod
     def _interstitial_offsets_frac() -> np.ndarray:
@@ -323,7 +361,46 @@ class LatticeDefect:
             perm[slot] = src
         return perm
 
+    @staticmethod
+    def _resolve_atomic_masses(ff_elements, atomic_masses=None) -> list[float]:
+        """One mass per force-field type.
+
+        Explicit ``atomic_masses`` must match ``ff_elements`` in length. When
+        omitted, each element's mass is looked up (myLAMMPS table first, then
+        pymatgen). Without this, myLAMMPS' assert_force_field falls back to its
+        global 4-element Fe/H/He/Cr mass list, which writes a Masses section
+        with the wrong number of types.
+        """
+        elems = [str(e) for e in ff_elements]
+        if not elems:
+            raise ValueError("ff_elements must list at least one element.")
+        if atomic_masses is not None:
+            masses = [float(m) for m in atomic_masses]
+            if len(masses) != len(elems):
+                raise ValueError(
+                    f"atomic_masses has {len(masses)} entries but ff_elements has "
+                    f"{len(elems)}; give one mass per atom type."
+                )
+            return masses
+
+        from mylammps.myglobal import myAtomicMasses, myElements
+        table = dict(zip(myElements, myAtomicMasses))
+        masses = []
+        for e in elems:
+            if e in table:
+                masses.append(float(table[e]))
+                continue
+            try:
+                from pymatgen.core.periodic_table import Element
+                masses.append(float(Element(e).atomic_mass))
+            except (ValueError, KeyError):
+                raise ValueError(
+                    f"No default mass for element {e!r}; pass atomic_masses=[...]."
+                ) from None
+        return masses
+
     def edge_dislocation(self, *, ff_elements: list[str], lattice_const: float | None = None,
+                         atomic_masses: list[float] | None = None,
                          burgers=None, glide_plane=None, current_axes: list | None = None,
                          newaxis: list[int] | None = None, burgerm: float | None = None,
                          nedges: int = 1, fy_start: float | None = None,
@@ -336,11 +413,16 @@ class LatticeDefect:
         here: pass current_axes (+ burgers/glide_plane) for automatic axis
         permutation, pass newaxis=[...] directly, or pass neither if the data
         already has y || b, z || glide normal, x || line.
+
+        ``atomic_masses`` (one per ff_elements entry) sets the Masses section;
+        when omitted, masses are looked up from the element symbols.
         """
         data = self.data
         if data.atoms is None or len(data.atoms) == 0:
             raise ValueError("No atoms loaded.")
-        data.assert_force_field(ff_elements)
+        data.assert_force_field(
+            ff_elements, atomic_masses=self._resolve_atomic_masses(ff_elements, atomic_masses),
+        )
 
         if burgers is None:
             burgers = self.default_burgers
@@ -362,6 +444,7 @@ class LatticeDefect:
         if perm != [0, 1, 2]:
             data.swap_axes(perm)
 
+        data.coords2fracts(normalization=True)
         data.create_edge_dislocation(
             burgerm, nedges=int(nedges), fy_start=fy_start, add_vacuum=add_vacuum,
             direction=int(vacuum_direction), lvac=float(lvac), reset_ids=reset_ids,
@@ -379,6 +462,7 @@ class LatticeDefect:
         }
 
     def screw_dislocation(self, *, ff_elements: list[str], lattice_const: float | None = None,
+                          atomic_masses: list[float] | None = None,
                           burgers=None, current_axes: list | None = None,
                           newaxis: list[int] | None = None, burgerm: float | None = None,
                           nscrews: int = 1, style: str | None = None,
@@ -395,11 +479,16 @@ class LatticeDefect:
         The core defaults to the atom nearest the box center (or the
         dipole/quadrupole positions for nscrews=2/4). center_offset nudges
         the core in the local x-y plane (Cartesian Angstrom) after that snap.
+
+        ``atomic_masses`` (one per ff_elements entry) sets the Masses section;
+        when omitted, masses are looked up from the element symbols.
         """
         data = self.data
         if data.atoms is None or len(data.atoms) == 0:
             raise ValueError("No atoms loaded.")
-        data.assert_force_field(ff_elements)
+        data.assert_force_field(
+            ff_elements, atomic_masses=self._resolve_atomic_masses(ff_elements, atomic_masses),
+        )
 
         if burgers is None:
             burgers = self.default_burgers
@@ -421,10 +510,17 @@ class LatticeDefect:
         if perm != [0, 1, 2]:
             data.swap_axes(perm)
 
+        import inspect
+        offset_kwargs = {}
+        if 'center_offset' in inspect.signature(data.create_screw_dislocation).parameters:
+            offset_kwargs['center_offset'] = center_offset
+        elif not np.allclose(center_offset, (0.0, 0.0)):
+            raise ValueError('This myLAMMPS version does not support a screw center_offset.')
+        data.coords2fracts(normalization=True)
         data.create_screw_dislocation(
             burgerm, int(nscrews), style=str(style), handle_pbc=str(handle_pbc),
             orientation=orientation, add_vacuum=add_vacuum,
-            direction=int(vacuum_direction), lvac=float(lvac), center_offset=center_offset,
+            direction=int(vacuum_direction), lvac=float(lvac), **offset_kwargs,
         )
 
         restored = False
@@ -455,13 +551,16 @@ class LatticeDefect:
                  triangle_rotation_deg: float = 0.0, in_plane_ref=None,
                  loop_atom_type: int | None = None, closure_layers: int = 2,
                  closure_disp_frac: float = 0.15, select_types=None,
-                 wrap: bool = True, reinit: bool = True):
+                 wrap: bool = True, reinit: bool = True, n_layers: int | None = None,
+                 plane_tol_factor: float = 0.30):
         """Add a prismatic loop of one of THIS lattice's families.
 
         ``family`` must be a key of this class's ``LOOP_FAMILIES`` (see
         :meth:`loop_families`), so a bcc builder accepts '111'/'100' and an
         fcc builder '111'/'110'. ``habit_plane`` defaults to the family's
-        own signature (e.g. (1,1,1) for '111').
+        own signature (e.g. (1,1,1) for '111'). ``n_layers`` picks the
+        platelet thickness from the family's ``allowed_layers`` (default:
+        the full Burgers repeat, k layers).
 
         The named wrappers on each subclass (``add_111_loop``,
         ``add_frank_loop``, ...) are thin shims over this.
@@ -482,14 +581,15 @@ class LatticeDefect:
             closure_layers=closure_layers, closure_disp_frac=closure_disp_frac,
             select_types=select_types, wrap=wrap, reinit=reinit,
             triangle_rotation_deg=triangle_rotation_deg, in_plane_ref=in_plane_ref,
+            n_layers=n_layers, plane_tol_factor=plane_tol_factor,
         )
 
     def _add_loop(self, *, family, loop_type, radius, lattice_const, ff_elements,
                   atomic_masses, center, habit_plane, box_axes, normal_box, shape,
                   n_repeats, loop_atom_type, closure_layers, closure_disp_frac,
                   select_types, wrap, reinit, triangle_rotation_deg=0.0,
-                  in_plane_ref=None):
-        """Shared core: select the k-layer platelet, then dispatch sil/vl."""
+                  in_plane_ref=None, n_layers=None, plane_tol_factor: float = 0.30):
+        """Shared core: select the n_layers-layer platelet, then dispatch sil/vl."""
         lt = str(loop_type).lower()
         is_sil = lt in ("sil", "sia", "interstitial")
         is_vl = lt in ("vl", "va", "vacancy")
@@ -501,7 +601,9 @@ class LatticeDefect:
             ff_elements=ff_elements, atomic_masses=atomic_masses, center=center,
             habit_plane=habit_plane, shape=shape, n_repeats=n_repeats,
             select_types=select_types, box_axes=box_axes, normal_box=normal_box,
+            plane_tol_factor=plane_tol_factor,
             triangle_rotation_deg=triangle_rotation_deg, in_plane_ref=in_plane_ref,
+            n_layers=n_layers, is_sil=is_sil,
         )
         if ctx is None:
             return 0
@@ -555,14 +657,20 @@ class LatticeDefect:
                            habit_plane, shape: str, n_repeats: int, select_types,
                            box_axes=None, normal_box=None,
                            triangle_rotation_deg: float = 0.0,
-                           in_plane_ref=None) -> dict | None:
-        """Resolve the box-frame normal and select EXACTLY k*n_repeats layers.
+                           in_plane_ref=None, n_layers=None,
+                           is_sil: bool = True,
+                           plane_tol_factor: float = 0.30) -> dict | None:
+        """Resolve the box-frame normal and select EXACTLY n_layers*n_repeats layers.
 
-        k and the layer spacing come from the lattice's _family_loop_geometry.
-        The selection snaps onto the actual atomic planes (circular-mean
-        phase) and takes nlay = k*n_repeats consecutive layers centered on
-        the loop. plane_tol = 0.30 * d_layer. PBC-safe via minimum-image
-        relative vectors (triclinic-safe).
+        k and the layer spacing come from the lattice's _family_loop_geometry;
+        n_layers defaults to k (one full Burgers repeat). The selection snaps
+        onto the actual atomic planes (circular-mean phase) and takes
+        nlay = n_layers*n_repeats consecutive layers centered on the loop.
+        plane_tol = plane_tol_factor * d_layer (default factor 0.30). PBC-safe
+        via minimum-image relative vectors (triclinic-safe). Near a defect
+        (e.g. a dislocation core) atoms are displaced off their ideal layers,
+        so a larger plane_tol_factor may be needed to pick up the full,
+        undistorted-equivalent atom count.
         """
         data = self.data
 
@@ -585,11 +693,39 @@ class LatticeDefect:
             raise ValueError("shape must be 'round', 'square' or 'triangle'.")
 
         a = float(lattice_const)
-        r = float(radius)
+        if shape == "square" and isinstance(radius, (tuple, list, np.ndarray)):
+            # Rectangle: independent half-widths along the plane's (u, v) axes
+            # (see _plane_basis_from_normal for how u, v map onto box x/y/z).
+            r_u, r_v = (float(x) for x in np.asarray(radius, dtype=float).reshape(2,))
+            r = max(r_u, r_v)
+        else:
+            r = float(radius)
+            r_u = r_v = r
 
         n_cubic, b_mag, k, d_layer = self._family_loop_geometry(family, habit_plane, a)
         n = self._resolve_loop_normal(n_cubic, box_axes, normal_box)
-        nlay = k * n_repeats
+        n_lay_rep = self._resolve_n_layers(family, n_layers, k, n_repeats)
+        nlay = n_lay_rep * n_repeats
+
+        # A whole number of Burgers repeats is a lattice translation along n.
+        # A partial platelet is not: the inserted copy must also be shifted in
+        # plane onto the stacking site that keeps it off its neighbours. That
+        # shift is crystallographic, so it needs the crystal orientation
+        # (box_axes or a cubic cell), not just a box-frame normal.
+        inplane = np.zeros(3)
+        if is_sil and nlay % k != 0:
+            if normal_box is not None:
+                raise ValueError(
+                    f"n_layers={n_lay_rep} needs the crystal orientation to place the "
+                    "inserted layer; pass box_axes instead of normal_box."
+                )
+            t = np.asarray(
+                self._partial_insert_offset(family, n_cubic, a, n_lay_rep), dtype=float,
+            ).reshape(3,)
+            if box_axes is not None:
+                A = np.asarray(box_axes, dtype=float).reshape(3, 3)
+                t = (A / np.linalg.norm(A, axis=1, keepdims=True)) @ t
+            inplane = t - float(t @ n) * n
 
         # A triangular footprint must be locked to the lattice rows, so default
         # its in-plane reference to a <110> direction in the habit plane and map
@@ -603,7 +739,7 @@ class LatticeDefect:
             )
 
         u, v = self._plane_basis_from_normal(n, ref_box)
-        plane_tol = 0.30 * d_layer
+        plane_tol = float(plane_tol_factor) * d_layer
 
         pos_all = data.atoms[["x", "y", "z"]].to_numpy(dtype=float)
         rel_all = data.min_image_rel(pos_all, c)
@@ -619,7 +755,7 @@ class LatticeDefect:
         if shape == "round":
             footprint = (cu * cu + cv * cv) <= (r * r)
         elif shape == "square":
-            footprint = (np.abs(cu) <= r) & (np.abs(cv) <= r)
+            footprint = (np.abs(cu) <= r_u) & (np.abs(cv) <= r_v)
         else:
             footprint = self._triangle_mask(cu, cv, r, triangle_rotation_deg)
 
@@ -653,27 +789,44 @@ class LatticeDefect:
             "sel": sel, "footprint": footprint, "type_mask": type_mask,
             "rel_all": rel_all, "n": n, "u": u, "v": v, "a": a, "b_mag": b_mag,
             "k": k, "d_layer": d_layer, "plane_tol": plane_tol,
+            "nlay": nlay, "inplane": inplane,
         }
 
     def _apply_sia_insert(self, ctx: dict, *, loop_atom_type: int | None,
                           wrap: bool, reinit: bool) -> int:
-        """SIL ending: copy the selected k-layer slab and split it +/- b/2.
+        """SIL ending: copy the selected nlay-layer slab and split it apart.
 
-        Each selected atom -> r - b/2 (original moves) and a NEW atom at
-        r + b/2, where b = |b| * n is the full Burgers vector along the habit
-        normal (a lattice translation), so the inserted layers continue the
-        stacking. Returns the number of atoms inserted.
+        Each selected atom -> r - h_old*n (original moves) and a NEW atom at
+        r + h_new*n + inplane, with h_old + h_new = T = nlay * d_layer, the
+        inserted thickness.
+
+        Whole Burgers repeats (nlay = n_repeats * k): T = n_repeats * b is a
+        lattice translation, inplane = 0, and h_old = b/2, h_new = T - b/2.
+        Keeping h_old at b/2 (not T/2) matters for n_repeats > 1: a shift of
+        a whole b would drop the moved atoms exactly onto the unmoved lattice
+        beyond the slab. For n_repeats = 1 this is the symmetric +/- b/2 split.
+
+        Partial platelet (nlay < k): symmetric +/- T/2 split, with ``inplane``
+        moving the copy onto the stacking site that keeps it off its
+        neighbours. Returns the number of atoms inserted.
         """
         data = self.data
         sel = ctx["sel"]
-        half = 0.5 * ctx["b_mag"] * ctx["n"]
+        n = np.asarray(ctx["n"], dtype=float)
+        thick = ctx["nlay"] * ctx["d_layer"]
+        if ctx["nlay"] % ctx["k"] == 0:
+            h_old = 0.5 * ctx["b_mag"]
+        else:
+            h_old = 0.5 * thick
+        h_new = thick - h_old
+        inplane = np.asarray(ctx.get("inplane", np.zeros(3)), dtype=float)
 
         sel_df = data.atoms.iloc[sel][["type", "x", "y", "z"]].copy()
         old_pos = sel_df[["x", "y", "z"]].to_numpy(dtype=float)
         sel_index = data.atoms.index.to_numpy()[sel]
 
-        moved_old = old_pos - half.reshape(1, 3)
-        new_pos = old_pos + half.reshape(1, 3)
+        moved_old = old_pos - (h_old * n).reshape(1, 3)
+        new_pos = old_pos + (h_new * n + inplane).reshape(1, 3)
         if wrap:
             moved_old = data.wrap_cart(moved_old)
             new_pos = data.wrap_cart(new_pos)

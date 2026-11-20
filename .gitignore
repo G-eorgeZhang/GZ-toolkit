@@ -1,3 +1,9 @@
-/tests/*
-!/tests/test_eamgen.py
 __pycache__/
+*.py[cod]
+.pytest_cache/
+/build/
+/dist/
+/*.egg-info/
+/review-pytest*/
+/tests/*.data
+/tests/defect_structures/

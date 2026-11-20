@@ -7,3 +7,6 @@ mylammps @ git+https://github.com/TaoLiang120/myLAMMPS.git
 [dev]
 pytest
 pytest-cov
+
+[workflow]
+PyYAML

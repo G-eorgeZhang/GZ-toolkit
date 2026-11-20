@@ -48,6 +48,7 @@ from gz_toolkit.potential_testing.structure_ops import (
     build_single_gas_in_bulk,
 )
 from gz_toolkit.potential_testing.summary import write_summary
+from gz_toolkit.potential_testing.thermal import build_thermal_cases
 
 
 # ---------------------------------------------------------------------------
@@ -368,6 +369,7 @@ def build_defects_post_reference(config: PotentialConfig, run_dir: str | Path = 
     """
     root = Path(run_dir).resolve()
     pot_dir = root / config.potential.pot_name
+    pot_dir.mkdir(parents=True, exist_ok=True)
     elements = config.potential.single_elements or [next(iter(config.potential.type_map))]
 
     manifest: dict[str, Any] = {
@@ -375,6 +377,7 @@ def build_defects_post_reference(config: PotentialConfig, run_dir: str | Path = 
         "reference": {},
         "point_defects": [],
         "elastic": [],
+        "thermal_lc": [],
         "loops": [],
         "disloc_lines": [],
         "alloys": [],
@@ -400,6 +403,12 @@ def build_defects_post_reference(config: PotentialConfig, run_dir: str | Path = 
         }
 
     (pot_dir / "reference_values.json").write_text(json.dumps(manifest["reference"], indent=2), encoding="utf-8")
+
+    manifest["thermal_lc"] = build_thermal_cases(config, pot_dir, root, per_el_lc)
+    from .benchmarks import build_benchmarks
+    manifest["benchmarks"] = build_benchmarks(config, pot_dir, root, per_el_lc)
+    from .neb import build_neb_cases
+    manifest["neb"] = build_neb_cases(config, pot_dir, root)
 
     # ---- point defects per element ----
     for element in elements:
@@ -433,31 +442,29 @@ def build_defects_post_reference(config: PotentialConfig, run_dir: str | Path = 
             if struct.lower() != "bcc":
                 continue
             lc = per_el_lc[element]
-            for loop_case in ("SIL111", "SIL100"):
-                case_dir = pot_dir / "loops" / element / loop_case
+            from dataclasses import replace
+            for loop_case, factor, loop_type in ((name, r, kind)
+                    for name in ("SIL111", "SIL100")
+                    for r in (config.workflow.loop_radius_factors or [config.workflow.loop_radius_factor])
+                    for kind in config.workflow.loop_types):
+                if loop_type not in ('sil', 'vl') or factor <= 0:
+                    raise ValueError('Loop types must be sil/vl and radius factors positive.')
+                tag = loop_case if not config.workflow.loop_radius_factors and loop_type == 'sil' else f'{loop_case}_{loop_type}_r{factor:g}'
+                case_dir = pot_dir / "loops" / element / tag
                 _setup_case_dir(case_dir, config, root)
+                case_config = replace(config, workflow=replace(config.workflow, loop_radius_factor=factor, loop_types=[loop_type]))
                 build_case_structure(
-                    case_dir, config, {element: 100.0}, loop_case, struct,
+                    case_dir, case_config, {element: 100.0}, loop_case, struct,
                     target_lc=lc, n_replicate=config.potential.size_single,
                 )
                 manifest["loops"].append({
-                    "element": element, "case": loop_case, "dir": str(case_dir.relative_to(root)),
+                    "element": element, "case": tag, "dir": str(case_dir.relative_to(root)),
                 })
 
-    # ---- dislocation lines (placeholder; opt-in) ----
+    # ---- reviewed line benchmarks ----
     if config.workflow.include_dislocation_lines:
-        for element in elements:
-            for line_case in ("edgedislo111", "edgedislo100", "screw111"):
-                case_dir = pot_dir / "disloc_lines" / element / line_case
-                case_dir.mkdir(parents=True, exist_ok=True)
-                (case_dir / "TODO.txt").write_text(
-                    "Dislocation-line construction is not implemented yet.\n"
-                    "See gz_toolkit/potential_testing/structure_ops.py::_apply_dislocation_case.\n",
-                    encoding="utf-8",
-                )
-                manifest["disloc_lines"].append({
-                    "element": element, "case": line_case, "skipped": "not_implemented",
-                })
+        if not any(item.get('kind') == 'dislocation' for item in config.workflow.benchmark_cases):
+            raise ValueError('include_dislocation_lines requires dislocation benchmark_cases with oriented structures and matched references.')
 
     # ---- alloys (LC only) ----
     if config.workflow.include_alloy_suite:
@@ -615,6 +622,26 @@ def build_defects_post_reference(config: PotentialConfig, run_dir: str | Path = 
                     "element": element, "case": case,
                     "dir": str(meb_dir.relative_to(root)),
                 })
+
+    if config.workflow.seakmc_enabled:
+        from gz_toolkit.core.modlmp import Modlmp_LmpData
+        from .benchmarks import _counts
+        for pattern in config.workflow.seakmc_case_patterns:
+            if Path(pattern).is_absolute() or '..' in Path(pattern).parts:
+                raise ValueError('SEAKMC case patterns must stay under the potential directory.')
+            for case_dir in sorted(pot_dir.glob(pattern)):
+                if not (case_dir / 'structure.data').is_file():
+                    continue
+                if any(entry.get('dir') == str((case_dir / 'meb').relative_to(root)) for entry in manifest['seakmc']):
+                    continue
+                data = Modlmp_LmpData.from_file(str(case_dir / 'structure.data'), 'atomic')
+                present = [el for el, count in _counts(data, config).items() if count and el in per_el_lc]
+                if not present:
+                    raise ValueError(f'Cannot identify a host reference for SEAKMC case {case_dir}.')
+                element = present[0]
+                struct = config.potential.crystal_structures[element]['structure']
+                meb_dir = emit_seakmc_inputs(case_dir, config, element, struct, per_el_lc[element], case_dir / 'relaxed.data', dactive=config.workflow.seakmc_dactive)
+                manifest['seakmc'].append({'element': element, 'case': case_dir.name, 'dir': str(meb_dir.relative_to(root))})
 
     (pot_dir / "build_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return manifest

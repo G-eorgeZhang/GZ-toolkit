@@ -6,6 +6,7 @@ Layout produced by ``init_potential_project``::
     ├── main.py            # one-liner driver
     ├── summarize.py       # one-liner summary
     ├── check.py           # user-initiated pre-flight check, run before main.py
+    ├── settings.json      # project-wide options (potinfo_savepath, ...)
     ├── pot_inputs/
     │   └── <pot_name>.json
     └── potentials/
@@ -196,5 +197,9 @@ def init_potential_project(root_dir: str | Path = ".", pot_name: str = "tao_2.31
         save_potential_config(default_config(pot_name=pot_name), cfg_path)
 
     write_driver_scripts(root)
+
+    # settings.json — project-wide options such as potinfo_savepath.
+    from gz_toolkit.potential_testing.settings import write_default_settings
+    write_default_settings(root)
 
     return root

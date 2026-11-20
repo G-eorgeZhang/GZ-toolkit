@@ -31,7 +31,7 @@ import re
 from pathlib import Path
 
 from gz_toolkit.potential_testing.config import PotentialConfig
-from gz_toolkit.potential_testing.parallel import _list_case_dirs
+from gz_toolkit.potential_testing.parallel import LAMMPS_GROUPS, _list_case_dirs
 
 Finding = tuple[str, str]  # (level, message) - level is "error" or "info"
 
@@ -39,13 +39,7 @@ _FILENAME_TOKEN_RE = re.compile(r"[\w.\-]+\.[A-Za-z0-9]+$")
 _MTP_REF_RE = re.compile(r"[\w.\-]+\.mtp")
 
 # Same work groups status.py walks, minus seakmc (no potential.inc there).
-_GROUPS: list[tuple[str, str]] = [
-    ("point_defects", "in.relax.lammps"),
-    ("elastic", "in.elastic"),
-    ("loops", "in.relax.lammps"),
-    ("alloy_lc", "in.alloy.lammps"),
-    ("gas_complexes", "in.relax.lammps"),
-]
+_GROUPS = [(name, values[0]) for name, values in LAMMPS_GROUPS.items()]
 
 
 def _tokens_in_pot_lines(pot_lines: str) -> set[str]:
@@ -172,11 +166,33 @@ def check_case_dirs(cfg: PotentialConfig, run_dir: str | Path = ".") -> list[Fin
 def check_project(pot_inputs_dir: str | Path = "pot_inputs", run_dir: str | Path = ".") -> dict[str, list[Finding]]:
     """Run both checks for every config in pot_inputs_dir. {pot_name: [(level, msg), ...]}."""
     from gz_toolkit.potential_testing.config import load_potential_configs
+    from gz_toolkit.potential_testing.settings import resolve_infobank_dir
 
     root = Path(run_dir)
+    saving = resolve_infobank_dir(root) is not None
     report: dict[str, list[Finding]] = {}
     for cfg in load_potential_configs(pot_inputs_dir):
         findings = check_potential_files(cfg, root=root)
         findings.extend(check_case_dirs(cfg, run_dir=run_dir))
+        findings.extend(check_reference_info(cfg, saving=saving))
         report[cfg.potential.pot_name] = findings
     return report
+
+
+def check_reference_info(cfg: PotentialConfig, saving: bool = True) -> list[Finding]:
+    """Paper/DOI (and GitHub/Matbench for universal pots) needed for the infobank README.
+
+    An error when potinfo_savepath is on (so the user is asked before submitting),
+    otherwise just info.
+    """
+    from gz_toolkit.potential_testing.config import missing_reference_fields
+
+    missing = missing_reference_fields(cfg.potential)
+    if not missing:
+        return []
+    example = ", ".join(f'"{k}": "..."' for k in missing)
+    msg = (f"missing reference info: {', '.join(missing)}. Add it to pot_inputs/"
+           f"{cfg.potential.pot_name}.json as \"reference\": {{{example}}} under \"potential\"")
+    if saving:
+        return [("error", msg + " - it goes into the pot_infobank README.md.")]
+    return [("info", msg + " (potinfo_savepath is off, so this is optional).")]

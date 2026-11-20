@@ -81,7 +81,7 @@ active_volume:
 
 spsearch:
   Method: dimer
-  NSearch: 10
+  NSearch: {nsearch}
   NMax4Trans: 1000
   FConv: 1.0e-6
   TrialStepsize: 0.015
@@ -133,6 +133,21 @@ _RUN_DRIVER = """\
 \"\"\"Wrapper that invokes the SEAKMC parallel runner.\"\"\"
 
 if __name__ == "__main__":
+    import json
+    from pathlib import Path
+    import shutil
+    setup = json.loads(Path('seakmc_setup.json').read_text())
+    source = Path('../relaxed.data')
+    if not source.is_file():
+        raise RuntimeError('Relax the parent case before starting SEAKMC; structure.data is not a fallback.')
+    parent_log = Path('../log.lammps')
+    if not parent_log.is_file() or 'Total wall time' not in parent_log.read_text() or 'ERROR' in parent_log.read_text():
+        raise RuntimeError('Parent LAMMPS relaxation did not finish cleanly.')
+    shutil.copy2(source, 'relaxed.data')
+    for name in setup['potential_files']:
+        destination = Path(name)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(Path('..') / name, destination)
     # The parallel build of SEAKMC_py exposes a function-style entry point.
     # If your installation is named differently, edit this single line.
     from seakmc_p.SEAKMC import run as seakmc_run
@@ -223,21 +238,22 @@ def emit_seakmc_inputs(
     Returns the meb directory path.
     """
     meb_dir = case_dir / "meb"
+    if (config.potential.kind != 'classical' or config.hpc.device == 'gpu') and not config.workflow.seakmc_template_path:
+        raise ValueError('ML/GPU SEAKMC needs an explicit tested force-evaluator template.')
     meb_dir.mkdir(parents=True, exist_ok=True)
 
     # Copy the relaxed data file into meb/ so SEAKMC and the rest of the
     # workflow are decoupled.
-    target_data = meb_dir / relaxed_data_path.name
-    if relaxed_data_path.exists():
-        shutil.copy2(relaxed_data_path, target_data)
+    target_data = meb_dir / 'relaxed.data'
 
     # Choose template — user override or shipped default.
     template_text = _DEFAULT_TEMPLATE
     user_tpl = config.workflow.seakmc_template_path
     if user_tpl:
         p = Path(user_tpl)
-        if p.is_file():
-            template_text = p.read_text(encoding="utf-8")
+        if not p.is_file():
+            raise FileNotFoundError(p)
+        template_text = p.read_text(encoding="utf-8")
 
     # Resolve fields.
     species_in_order = sorted(config.potential.type_map, key=lambda e: config.potential.type_map[e])
@@ -262,9 +278,12 @@ def emit_seakmc_inputs(
         coordnums_block=_coord_block(types_in_order, cn),
         data_filename=target_data.name,
         dactive=f"{dactive:.2f}",
+        nsearch=config.workflow.seakmc_searches,
     )
     (meb_dir / "input.yaml").write_text(rendered, encoding="utf-8")
     (meb_dir / "run_seakmc_p.py").write_text(_RUN_DRIVER, encoding="utf-8")
+    import json
+    (meb_dir / 'seakmc_setup.json').write_text(json.dumps({'potential_files': config.potential.potential_files}, indent=2))
 
     return meb_dir
 

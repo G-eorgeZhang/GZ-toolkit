@@ -25,12 +25,8 @@ an optional `<CLUSTER>/meta.json` (machine-level facts). Both are looked up by
 ```
 
 `path2gz_toolkit` is the install location of this `gz_toolkit` checkout on
-that cluster. It's defined once per cluster (not per potential) because it
-never changes across pots run on the same machine. Used by
-`gz_toolkit.pot_infobank.promote_tag_json` to resolve where to copy a
-potential's `<pot_name>.json` when `PotentialMetadata.promote_to_infobank = True`
-(see `gz_toolkit/pot_infobank/__init__.py`). Leave it `null`/omit the file if
-this cluster never promotes.
+that cluster. It is no longer used to decide where tested potentials are saved;
+that is `potinfo_savepath` in the potential-testing project's `settings.json`.
 
 ## Adding a GPU partition
 

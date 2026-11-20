@@ -1,2 +1,3 @@
 [console_scripts]
+gz-toolkit-install-skill = gz_toolkit.skills:main
 gz-toolkit-potential-testing = gz_toolkit.potential_testing.main:main

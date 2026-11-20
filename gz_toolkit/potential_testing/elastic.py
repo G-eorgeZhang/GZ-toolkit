@@ -176,4 +176,36 @@ def build_elastic_cases(
                 "dir": str(case_dir.relative_to(project_root)),
             })
 
+    # The stress/strain method is not restricted to the prototype builders.
+    # Imported reviewed cells retain their chemistry and charge/bond sections.
+    import shutil
+    from .benchmarks import _safe_name
+    seen_imports = set()
+    for spec in config.workflow.elastic_cases:
+        name = _safe_name(spec['name'])
+        case_dir = pot_dir / 'elastic' / name
+        if name in seen_imports or (case_dir.exists() and not (case_dir / 'imported_elastic.json').is_file()):
+            raise ValueError(f'Imported elastic case name collides with an existing case: {name}')
+        seen_imports.add(name)
+        style = spec.get('atom_style', 'atomic')
+        if style not in ('atomic', 'charge', 'full'):
+            raise ValueError('Imported elastic atom_style must be atomic, charge, or full.')
+        _setup(case_dir)
+        shutil.copy2(project_root / spec['structure_file'], case_dir / 'structure.data')
+        init = (case_dir / 'init.mod').read_text()
+        init = init.replace('read_data       structure.data', f'atom_style {style}\nread_data       structure.data nocoeff')
+        (case_dir / 'init.mod').write_text(init)
+        import json
+        (case_dir / 'imported_elastic.json').write_text(json.dumps(spec, indent=2))
+        manifest.append({'case': 'elastic_imported', 'system': name, 'dir': str(case_dir.relative_to(project_root))})
+    # Writers may include a zero-tilt header for an axis-aligned cell. LAMMPS
+    # still reads that as triclinic; a second conversion would be invalid.
+    import re
+    for entry in manifest:
+        case_dir = project_root / entry['dir']
+        header = (case_dir / 'structure.data').read_text().split('Atoms')[0]
+        if re.search(r'^\s*[-+0-9.eE]+\s+[-+0-9.eE]+\s+[-+0-9.eE]+\s+xy\s+xz\s+yz\s*$', header, re.MULTILINE):
+            init_path = case_dir / 'init.mod'
+            init_path.write_text(init_path.read_text().replace(
+                'change_box all triclinic', '# supplied data cell is already triclinic'))
     return manifest

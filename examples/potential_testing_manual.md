@@ -6,6 +6,10 @@ and collect a comparison table across potentials.
 
 CLI entry point: `gz-toolkit-potential-testing` (see `cli.py`).
 
+For surfaces, C15/SFT, dislocation lines, loop scans, alloy-gas complexes,
+molecules, SEAKMC/NEB migration and GPU/CPU resource settings, see
+[Extended potential benchmarks](extended_potential_testing.md).
+
 ---
 
 ## Step 1 — Create the project
@@ -22,11 +26,35 @@ This scaffolds:
 ├── main.py                 # calls run_all() — builds references + job scripts
 ├── summarize.py             # calls write_grouped_summaries() — writes summary CSV(s), see Step 10
 ├── check.py                 # user-run pre-flight check — see Step 4
+├── settings.json            # project-wide options, e.g. potinfo_savepath (below)
 ├── pot_inputs/
 │   └── my_potential.json    # the config you'll edit in Step 2
 └── potentials/
     └── my_potential/        # drop your potential file(s) here
 ```
+
+### Potential names
+
+Folders are named `<name>_<system>_<year>`, e.g. `gao_FeHe_2011` or
+`tao_2.31_FeHeCr_2026`; without a year the name ends in `_`
+(`tao_2.31_FeHeCr_`). You can start with a short name such as `gao2011`: once
+`pot_inputs/gao2011.json` exists, the next command that loads it renames the
+JSON, `potentials/gao2011/` and any run dir to the full name. The system is the
+elements in `type_map` order.
+
+### `settings.json`
+
+```json
+{ "potinfo_savepath": true }
+```
+
+| `potinfo_savepath` | What happens when a potential's tests finish |
+|---|---|
+| `false` | Nothing is saved (also the behaviour when there is no `settings.json`). |
+| `true` | Saved into `<root>/pot_infobank/<pot_name>/`. |
+| `"/some/path"` | Saved into `/some/path/pot_infobank/<pot_name>/` (created if missing). Relative paths are relative to `<root>`. |
+
+YAML (`settings.yaml`) also works if PyYAML is installed.
 
 Add one more `pot_inputs/<name>.json` per potential you want to compare
 side-by-side (they all get summarized into the same `summary.csv`).
@@ -70,8 +98,8 @@ Every field below shows a real example value and what to watch out for.
 | `size_elastic` | `4` | Smaller replication for elastic-constant cells (Cij converges fast). |
 | `size_elastic_alloy` | `6` | Replication for alloy elastic cells (only if `elastic_for_alloys` is on) — a single random realization, treat Cij as an estimate. |
 | `potential_files` | `["library.meam", "FeCr.meam"]` | **List, not a single string** — a potential can need more than one file (e.g. MEAM's shared library + per-system parameter file, or a `.mtp` file plus a settings file). Every name listed here must exist under `potentials/<pot_name>/`; each is copied into every case directory. Use `[]` if the potential is self-contained in `pot_lines` (e.g. a built-in pair_style needing no external file). |
-| `kind` | `"classical"` | One of `"classical"` (eam/meam/hybrid), `"ml"` (mtp/snap), `"universal"` (chgnet/mace). Affects SEAKMC-compatibility checks. |
-| `promote_to_infobank` | `false` | Whether `summarize-pot` (Step 9) also copies this pot's `<pot_name>.json` into `gz_toolkit/pot_infobank/`. `false` (default) never copies. `true` copies to the cluster's `path2gz_toolkit` — requires `hpc.cluster` to be set and that cluster's `gz_toolkit/jobs/cluster_info/<CLUSTER>/meta.json` to have `path2gz_toolkit` filled in (it's per-cluster, not per-pot, since the install location doesn't change across pots on the same machine). A path string copies there directly, no validation. |
+| `kind` | `"classical"` | One of `"classical"` (eam/meam/hybrid), `"ml"` (mtp/snap), `"universal"` (chgnet/mace). Affects SEAKMC-compatibility checks and which `reference` fields are required. |
+| `reference` | `{"paper": "...", "doi": "10.1016/..."}` | Where the potential comes from, written into the pot_infobank `README.md`. `paper` and `doi` are required (`authors` optional); universal potentials also need `github` and `matbench` (Matbench Discovery link). When `potinfo_savepath` is on, `check` reports missing fields as errors so you fill them in before submitting; anything still missing is written as `TODO` in the README. |
 
 ### `workflow` section
 
@@ -102,7 +130,7 @@ Every field below shows a real example value and what to watch out for.
 | Tag | Example | Notes |
 |---|---|---|
 | `mode` | `"scatter"` | `"scatter"` (one `.job` per case, pairs with `paral_degree: 4`) or `"batch"` (group cases into fewer `.job` files, capped by `batch_max_per_file`/`max_jobs_per_batch`). |
-| `cluster` | `"ISAAC"` | Must match a CSV in `gz_toolkit/jobs/cluster_info/<CLUSTER>/<CLUSTER>.csv` and/or a template in `gz_toolkit/jobs/templates/machines/<CLUSTER>.job`. Use `null` for a generic SLURM script. Each cluster's directory can also hold `<CLUSTER>/meta.json` with `path2gz_toolkit` (see `promote_to_infobank` above). |
+| `cluster` | `"ISAAC"` | Must match a CSV in `gz_toolkit/jobs/cluster_info/<CLUSTER>/<CLUSTER>.csv` and/or a template in `gz_toolkit/jobs/templates/machines/<CLUSTER>.job`. Use `null` for a generic SLURM script. |
 | `partition_key` | `"s"` | **Must be quoted** — it's a string key into the cluster CSV, not a bareword. For ISAAC: `"c"` = campus (24:00:00 cap), `"s"` = short (3:00:00 cap), `"g"` = condo (30-00:00:00 cap). Picking a key auto-fills partition/qos/account and caps `walltime` to that partition's max. |
 | `walltime` | `"03:00:00"` | `HH:MM:SS` or `D-HH:MM:SS`. Must not exceed the chosen partition's cap (it gets silently capped with a warning if it does). |
 | `nodes` | `1` | Number of nodes per job. |
@@ -265,7 +293,7 @@ missing or stale potential file copy in them.
 pull a potential's numbers by tag instead of you re-typing `lc` by hand)
 needs a standardized per-pot record. That's `<pot_name>/<pot_name>.json`
 (e.g. `gao2011/gao2011.json`) — named after the potential, not a fixed
-filename, so it's already named correctly once copied into `pot_infobank/`.
+filename.
 It builds itself automatically: `emit_jobs` (Step 6) appends a final
 `summarize-pot` job to every potential's job chain, dependent on that
 potential's own last stage(s) — it fires the moment that potential is done,
@@ -279,8 +307,23 @@ independently of every other potential in `pot_inputs/`. Where it lands per
 | `3` (one job per work-group) | `<pot_name>/summarize_pot.job`, chained `--dependency=afterok` on the last group **and** SEAKMC (if enabled) |
 | `4` (scatter) | `<pot_name>/summarize_pot.job`, submitted by the `build_defects_scatter` job once it's sbatched every per-case job, depending on all of them |
 
-If that potential's JSON sets `"promote_to_infobank"` (see Step 2), the same
-automatic step also copies `<pot_name>.json` into `gz_toolkit/pot_infobank/`.
+If `potinfo_savepath` in `settings.json` is on (see Step 1), the same
+automatic step also saves the potential to the pot_infobank:
+
+```
+<base>/pot_infobank/gao_FeHe_2011/
+├── pot_info.json   # this record + pot_lines, potential_files, kind, reference
+├── M07_eam.fs      # the potential file(s), copied from potentials/<pot_name>/
+├── pot.inc         # pair_style / pair_coeff / mass lines; files assumed next to the input
+└── README.md       # paper, DOI (+ GitHub, Matbench for universal), how to use it in LAMMPS
+```
+
+Use it in LAMMPS by copying the files next to your input and adding
+`include pot.inc` after `read_data`/`create_box`. Read it back in Python with
+`gz_toolkit.pot_infobank.load_tag("gao_FeHe_2011", infobank_dir=...)` (the short
+name `gao2011` also works), `list_potentials(infobank_dir)` and
+`pot_dir(name, infobank_dir)`. Fix missing reference info by editing
+`pot_inputs/<pot>.json` and re-running `summarize-pot`.
 
 `<pot_name>.json` is deliberately minimal — just what you need to go from
 `pot="gao2011"` to an actual cell: `pot_name`, `type_map`, `masses`, and
@@ -417,3 +460,107 @@ gz-toolkit-potential-testing write-scripts --root . --force --only summarize.py
 `--force` overwrites just that one file with the current template (dropping
 any hand edits to it); `--only` keeps `main.py`/`check.py` untouched. Drop
 `--only` to refresh all three at once.
+
+## Finite-temperature lattice constants
+
+Pure-element thermal lattice-constant tests are enabled by default in addition
+to the existing 0 K references. Default temperatures are 600, 700, 800, 900,
+1000 and 1023 K. Disable them with `workflow.include_thermal_lc: false`.
+
+Python builds a fresh 10 x 10 x 10 replicated unit cell for each temperature,
+scaled from the 0 K reference. LAMMPS reads `structure.data`, minimizes atom
+positions at fixed box, assigns reproducible velocities, and runs 50,000 NPT
+steps at the target temperature and zero external pressure. The default 1 fs
+step gives 50 ps total. The thermostat and barostat damping times are 100 and
+1,000 timesteps (0.1 and 1 ps). `iso` preserves the initial cell shape.
+
+Cases are under `<pot>/thermal_lc/<element>/<temperature>K/`, with optional
+alloy cases under composition tags at the same depth. They participate in all
+four parallelization degrees, potential-file checks, status, and summaries.
+Each case adds a simulation to the campaign; review resources before launching.
+
+The following JSON fragments show the relevant settings inside the existing
+`potential` and `workflow` sections:
+
+```json
+{
+  "potential": {"size_thermal_lc": 10},
+  "workflow": {
+    "include_thermal_lc": true,
+    "thermal_lc_for_alloys": false,
+    "thermal_lc_temperatures": [600, 700, 800, 900, 1000, 1023],
+    "thermal_lc_steps": 50000,
+    "thermal_lc_average_steps": 20000,
+    "thermal_lc_sample_every": 100,
+    "thermal_lc_timestep_ps": 0.001,
+    "thermal_lc_tdamp_steps": 100,
+    "thermal_lc_pdamp_steps": 1000,
+    "thermal_lc_pressure_bar": 0,
+    "thermal_lc_barostat": "iso",
+    "thermal_lc_seed": 1729,
+    "thermal_lc_block_steps": 4000,
+    "thermal_lc_max_relative_drift": 0.002,
+    "thermal_lc_max_block_spread": 0.005,
+    "thermal_lc_temperature_tolerance": 0.05
+  }
+}
+```
+
+These fragments are not a complete potential configuration: retain the existing
+potential name, type mapping, masses, structures, potential lines and files.
+
+### What counts as flat
+
+`thermal_lc.dat` records step, Lx, Ly, Lz (angstrom), temperature (K), and pressure
+(bar) every 100 steps, without running averages. Analysis uses every sample with
+`30000 < step <= 50000`: exactly 200 samples, never a hand-picked shorter tail.
+The final window is divided into five equal 4,000-step blocks. For each axis:
+
+- The absolute fitted linear drift over 20,000 steps, divided by the mean length,
+  must be at most 0.002 (0.2%).
+- The range of the five block means, divided by the mean length, must be at most
+  0.005 (0.5%).
+- The mean measured temperature must be within 5% of the target; isotropic runs
+  must preserve the starting shape within numerical precision.
+
+These are configurable screening heuristics, not a statistical proof of
+thermodynamic equilibrium. Mean pressure and length fluctuations are recorded
+for inspection. Check crystal phase, melting, temperature/pressure histories,
+finite-size effects and timestep sensitivity before using a value as validated
+thermal expansion. A 50 ps run is not guaranteed to converge.
+
+A complete LAMMPS log, matching input fingerprints, completion marker, final
+structure, and complete finite-valued sample history are required. A completed
+but nonflat run is `unconverged` in status and summaries. It is not extended
+automatically and contributes no accepted lattice constant. Adjust the run
+length and regenerate/relaunch the case explicitly; changing the averaging
+window alone must not be used to hide drift.
+
+### Outputs
+
+Summarizing writes `thermal_result.json` inside each case with acceptance state,
+reasons, averaging window, block means, relative drift, length standard deviations
+and measured temperature/pressure. Candidate lengths are retained for inspection
+when unconverged, and are not accepted physical results.
+
+Accepted values appear in the normal summary CSVs as `thermal_lc_Fe_600K`,
+`thermal_lc_x_Fe_600K`, `thermal_box_x_Fe_600K`, etc. The per-potential tag JSON
+adds a separate `thermal_lc` table, such as `thermal_lc.Fe.600K`; its existing
+0 K `lc` table is unchanged. For isotropic expansion, scalar lc scales the
+starting prototype's a0. Raw cell lengths and replicated-unit-cell edge lengths
+are also saved. For HCP, the orthogonal repeat edges are a, sqrt(3)*a, and c;
+they must not be interpreted as three equal cubic lattice constants. The
+axis lc metrics normalize by the starting prototype geometry. Optional `aniso`
+runs report axes and raw lengths, and do not produce a scalar lc.
+
+The current potential-testing structure builders support BCC, FCC and HCP.
+Other ceramic prototypes require additional structure support; this thermal
+feature does not silently construct them as metals.
+
+### Alloys (explicit opt-in)
+
+Set `thermal_lc_for_alloys: true` and supply `two_element_suites` and/or
+`multi_element_suites`. Alloy thermal tests can be enabled independently of the
+0 K alloy scan. Each composition uses the configured structure/ordering and a
+reproducible atomic arrangement shared across temperatures, with different
+velocity seeds. A pure-element reference for the host species is required.

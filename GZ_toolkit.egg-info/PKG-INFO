@@ -1,7 +1,7 @@
 Metadata-Version: 2.4
 Name: GZ-toolkit
-Version: 0.1.0
-Summary: LAMMPS structure manipulation toolkit for building crystals, creating defects, and merging atomistic configurations.
+Version: 0.2.0
+Summary: Atomistic structure tools, HPC potential testing, and AI-human simulation workflows.
 Author: Zhang
 License: MIT
 Project-URL: Homepage, https://github.com/zhang/GZ-toolkit
@@ -25,36 +25,53 @@ Requires-Dist: mylammps @ git+https://github.com/TaoLiang120/myLAMMPS.git
 Provides-Extra: dev
 Requires-Dist: pytest; extra == "dev"
 Requires-Dist: pytest-cov; extra == "dev"
+Provides-Extra: workflow
+Requires-Dist: PyYAML; extra == "workflow"
 
 # GZ-toolkit
 
-A LAMMPS structure manipulation toolkit for computational materials science.
+Atomistic structure tools, HPC potential testing, and AI-human simulation workflows for computational materials science.
 
 `GZ-toolkit` (import name: `gz_toolkit`) provides tools for:
+
 - **Building crystal structures** — seed perfect unit cells (FCC, BCC, HCP, diamond, rocksalt, zinc blende, wurtzite, fluorite, CsCl) and write LAMMPS data files.
 - **Creating defects** — voids, ⟨111⟩ and ⟨100⟩ dislocation loops (SIA and vacancy), Frenkel pairs, and interstitial insertion.
 - **Merging structures** — carve-and-transplant regions between host/donor configurations with automatic overlap scoring and boundary optimization.
 - **Geometric selection** — select atoms by sphere, cylinder, plane, cube, atom type, coordinates, percentage, or atom/molecule ID — all through a unified `region_mask()` dispatcher.
 - **Coordinate transforms** — symmetry operations and integer supercell transformations.
+- **Thermal lattice constants** — default pure-element NPT tests at 600, 700,
+  800, 900, 1000 and 1023 K, using Python-built 10 x 10 x 10 supercells.
+  The final 20,000 of 50,000 steps are averaged only when the convergence
+  screen passes. Alloy tests are opt-in. See the
+  [thermal-lattice-constant guide](examples/potential_testing_manual.md#finite-temperature-lattice-constants).
+- **Extended benchmarks (opt-in)** — surface energies, C15/SFT seeds,
+  reviewed dislocation-line tests, loop size scans, gas complexes in alloys,
+  molecular references, extended SEAKMC searches and LAMMPS NEB paths.
+  CPU preparation and backend-specific GPU launch settings are supported.
+  See [the extended benchmark guide](examples/extended_potential_testing.md).
+- **AI-human simulation workflows** — a bundled materials-simulation skill helps
+  an agent prepare structures, inputs, reviewed jobs, completion checks and summaries.
+  Includes guides for LAMMPS, SEAKMC, VASP, SPPARKS and MOOSE.
 
 ## Installation
 
-### Prerequisites
-
-`GZ-toolkit` depends on [`myLAMMPS`](https://github.com/TaoLiang120/myLAMMPS.git), a LAMMPS data I/O library. Install it first:
+Use Python 3.9 or newer in a dedicated environment. From the project root:
 
 ```bash
-pip install git+https://github.com/TaoLiang120/myLAMMPS.git
+python -m pip install .
+# For development:
+python -m pip install -e ".[dev]"
 ```
 
-### Install GZ-toolkit
+Dependencies, including the `myLAMMPS` Git dependency, are installed automatically.
+Git and network access are needed for that dependency. LAMMPS/VASP binaries,
+plugins, MPI and VASP pseudopotentials must be provided separately on the cluster.
+See [INSTALL.md](INSTALL.md) for HPC setup, offline installation considerations,
+installation checks and agent-skill installation.
 
 ```bash
-# From the project root
-pip install -e .
-
-# With development dependencies (pytest)
-pip install -e ".[dev]"
+gz-toolkit-potential-testing --help
+gz-toolkit-install-skill --help
 ```
 
 ### Dependencies
@@ -63,8 +80,8 @@ pip install -e ".[dev]"
 |---------|---------|
 | [numpy](https://numpy.org/) | Array operations |
 | [pandas](https://pandas.pydata.org/) | Atom table management |
-| [scipy](https://scipy.org/) | Fast neighbor lookups (KD-trees) |
-| [pymatgen](https://pymatgen.org/) | Crystal structure generation and lattice operations |
+| [scipy](https://scipy.org/) | Neighbor lookups, spline interpolation and bounded optimization |
+| [pymatgen](https://pymatgen.org/) | Crystal/lattice operations and VASP reference parsing |
 | [myLAMMPS](https://github.com/TaoLiang120/myLAMMPS.git) | LAMMPS data file I/O (`lmpData`, `lmpBox`) |
 
 ## Quick Start
@@ -130,8 +147,9 @@ defect.add_111_loop(
     lattice_const=2.8553,
     ff_elements=["Fe", "Fe"],
     atomic_masses=[55.845, 55.845],
-    loop_type="interstitial",
-    n_layers=1,
+    loop_type="sil",
+    n_layers=3,      # 3 (default): perfect b = 1/2<111> loop; 1: single faulted (111) plane
+    n_repeats=1,
 )
 
 data.to_file("with_loop.data")
@@ -142,11 +160,7 @@ data.to_file("with_loop.data")
 `gz_toolkit` (mainly through `potential_testing/`) drives a LAMMPS potential-testing
 run in four stages:
 
-```
-1. Create structure          2. Create input file      3. Create + identify        4. Submit
-   (buildmtx / defect)          (MANUAL step)              directory tree              ┌─ (a) Python manager: auto-submit
-                                                             (jobs / potential_testing)  └─ (b) Job files + .sh: manual submit
-```
+Structures → potential configuration → generated inputs/jobs → reviewed SLURM submission → summaries
 
 1. **Create structure** — `Gen_crystal` (`buildmtx/buildstr.py`) seeds a crystal cell;
    `BCCDefect`/`FCCDefect` (`defect/`) and `structure_ops.py` carve out point defects,
@@ -171,25 +185,20 @@ run in four stages:
    - `generate_folder_tree()` (`jobs/tree.py`) — writes a human-readable
      `folder_tree.txt` snapshot of any directory.
 
-4. **Submit** — controlled by `workflow.paral_degree` in the potential's config:
-   - **(a) Python script as manager (automatic, chained submission)** —
-     `paral_degree = 3` or `4`. `emit_jobs()` / `scatter_cases()`
-     (`potential_testing/parallel.py`) write per-stage or per-case `.job` files
-     *and* call `sbatch` themselves, chaining reference → build-defects → cases →
-     summary with `--dependency=afterok` so the whole pipeline runs unattended
-     once you kick off the first job.
-   - **(b) Job files + shell script (manual submission)** — `paral_degree = 1` or
-     `2`, or `ScatterSubmitter`/`PatchSubmitter` (`jobs/submission.py`). Every
-     `.job` file is written up front alongside one `submit_all.sh`; nothing is
-     auto-submitted — `jobs/submission.py` explicitly never calls `sbatch`, so you
-     review and run `bash submit_all.sh` yourself.
+4. **Submit** — `run` prepares job files and `submit_all.sh` for every
+   `workflow.paral_degree`. Review the generated settings and run the launcher
+   explicitly. Degree 1 uses a single pipeline job; degree 2 uses one per
+   potential; degree 3 chains stage/group jobs with dependencies. Degree 4
+   launches reference and build jobs, then the build/scatter job submits
+   individual cases and dependent summaries at runtime. Review its total job
+   count and resource settings before launching.
 
 Driven end-to-end via the CLI:
 
 ```bash
 python -m gz_toolkit.potential_testing.cli init --root . --pot-name my_pot   # scaffold project
 python -m gz_toolkit.potential_testing.cli run --pot-inputs pot_inputs       # stage 1 + emit jobs
-bash submit_all.sh                                                          # stage 4(b), if paral_degree in (1,2)
+bash submit_all.sh                                                          # explicitly launch the reviewed jobs (all degrees)
 python -m gz_toolkit.potential_testing.cli status --pot-inputs pot_inputs    # check progress anytime
 ```
 
@@ -204,19 +213,62 @@ gz_toolkit/
 │   └── buildstr.py           # Gen_crystal: seed crystal structures
 ├── defect/
 │   ├── bcc_defect.py         # BCCDefect: void, loops, Frenkel pairs, transforms
-│   └── fcc_defect.py         # FCCDefect (placeholder)
+│   └── fcc_defect.py         # FCCDefect: voids, loops and point defects
 ├── jobs/                     # SLURM job templates, directory + submission helpers
-└── potential_testing/        # potential-testing pipeline (reference → defects → summary)
+├── potential_testing/        # potential-testing pipeline (reference → defects → summary)
+├── skills/                   # materials-simulation skill and local installer
+├── analyze/                  # formation/binding energies and elastic formulas
+└── pot_infobank/             # validated potential metadata
 
 tests/                        # pytest suite
-examples/                     # usage example scripts
+examples/                     # usage scripts and potential-testing manual
 ```
+
+## AI-human co-use
+
+The skill is optional. Installing or importing the Python package never installs
+or activates it. An agent reading this project should check its available skills
+first, suggest installation if missing, and ask the user before installing it.
+See [AGENTS.md](AGENTS.md). A read-only check for Codex is:
+
+```bash
+python -m gz_toolkit.skills --check
+```
+
+The check exits with code 0 when installed and 1 when missing; it creates no files.
+If you choose to install the bundled skill into Codex:
+
+```bash
+gz-toolkit-install-skill
+# Equivalent without the console command:
+python -m gz_toolkit.skills
+```
+
+The complete skill is copied to `$CODEX_HOME/skills/materials-simulation-skill`
+(default `~/.codex/skills/materials-simulation-skill`). It is available on the
+next Codex turn; invoke `$materials-simulation-skill` or describe a simulation
+task. Use `--dest /path/to/agent/skills` for another agent and `--force` to
+replace an existing installation. Installation does not launch simulations.
+
+The skill maintains a saved plan, reference structures and inputs, job previews,
+completion checks, and CSV summaries. Human decisions remain visible in the
+plan. Preparing jobs and submitting them are separate actions; existing user
+authorization is reused. Custom campaigns use `sim_plan.yaml` (install the
+`workflow` extra for PyYAML) or `sim_plan.json`. Potential-testing projects use
+the package's existing `pot_inputs/` layout and CLI.
+
+Read [the skill](gz_toolkit/skills/materials-simulation-skill/SKILL.md) and
+[its package integration guide](gz_toolkit/skills/materials-simulation-skill/references/gz-toolkit.md)
+for submission boundaries and remaining reliability limits. Instructions guide
+agent behavior; they do not change the package's status or failure handling.
 
 ## Running Tests
 
 ```bash
-pytest tests/ -v
+python -m pytest tests/ -v
 ```
+
+See [CHANGELOG.md](CHANGELOG.md) for release changes.
 
 ## License
 

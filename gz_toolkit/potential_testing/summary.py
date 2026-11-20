@@ -7,8 +7,8 @@ deliberately decoupled so one can't go stale/missing and break the other:
   record to ``<run_dir>/<pot_name>/<pot_name>.json`` once that pot's own
   tests finish (see ``gz_toolkit.potential_testing.cli`` ``summarize-pot``,
   wired to run automatically at the end of each pot's job chain). This is
-  "JSON for code" — what ``gz_toolkit.pot_infobank.promote_tag_json`` copies
-  elsewhere (same filename) for ``buildmtx``/``defect``/``analyze`` to read a
+  "JSON for code" — what ``gz_toolkit.pot_infobank.save_potinfo`` copies
+  into a per-potential pot_infobank dir for ``buildmtx``/``defect``/``analyze`` to read a
   potential's numbers back out by tag.
 * ``write_wide_summary`` / ``write_grouped_summaries(pot_inputs_dir, run_dir,
   groups)`` — parses each pot's logs directly (same as ``build_pot_tag_json``,
@@ -269,6 +269,54 @@ def _collect_pot_metrics(
             if e_single is not None:
                 put(f"Ecoh_{el}", cohesive_energy(e_per_atom, e_single), el)
 
+    # Finite-temperature lengths are accepted only after the complete final
+    # window passes the thermal convergence screen. Diagnostics remain visible.
+    from gz_toolkit.potential_testing.thermal import analyze_thermal_case
+    for case_dir in sorted((pot_dir / "thermal_lc").glob("*/*")):
+        if not (case_dir / "thermal_case.json").is_file():
+            continue
+        result = analyze_thermal_case(case_dir)
+        (case_dir / "thermal_result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+        if "tag" not in result:
+            continue
+        system, tag = result["system"], f"{result['tag']}_{result['temperature_K']:g}K"
+        put(f"thermal_status_{tag}", result["state"], system)
+        for key, label in (("mean_temperature_K", "temperature"), ("mean_pressure_bar", "pressure")):
+            if key in result:
+                put(f"thermal_{label}_{tag}", result[key], system)
+        if result["converged"]:
+            if "lc_A" in result:
+                put(f"thermal_lc_{tag}", result["lc_A"], system)
+            for i, axis in enumerate("xyz"):
+                put(f"thermal_lc_{axis}_{tag}", result["lattice_axes_A"][i], system)
+                put(f"thermal_box_{axis}_{tag}", result["box_A"][i], system)
+                put(f"thermal_cell_edge_{axis}_{tag}", result["unit_cell_edges_A"][i], system)
+
+    from .benchmarks import collect_benchmark_metrics
+    mu = {el: ref_total_pe[el] / n for el, n in ref_natoms.items() if n > 0 and el in ref_total_pe}
+    benchmark_metrics, benchmark_systems = collect_benchmark_metrics(cfg, pot_dir, mu)
+    out.update(benchmark_metrics)
+    system_of.update(benchmark_systems)
+    from .neb import analyze_neb_case
+    for case in sorted((pot_dir / 'neb').glob('*/*')):
+        if not (case / 'neb.json').is_file():
+            continue
+        result = analyze_neb_case(case)
+        tag = f"{result['system']}_{result['name']}"
+        put(f'neb_status_{tag}', result['state'], result['system'])
+        if result['state'] == 'done':
+            put(f'neb_forward_barrier_{tag}', result['forward_barrier'], result['system'])
+            put(f'neb_backward_barrier_{tag}', result['backward_barrier'], result['system'])
+        (case / 'neb_result.json').write_text(json.dumps(result, indent=2))
+    from .migration import seakmc_metrics
+    for meb in sorted(pot_dir.rglob('meb')):
+        metrics = seakmc_metrics(meb)
+        if metrics:
+            tag = '_'.join(meb.parent.relative_to(pot_dir).parts)
+            system = next((el for el in cfg.potential.single_elements if el in meb.parts), 'migration')
+            for key, value in metrics.items():
+                put(f'seakmc_{key}_{tag}', value, system)
+
     # Point defects: formation energies.
     pd_root = pot_dir / "point_defects"
     if pd_root.is_dir():
@@ -339,6 +387,9 @@ def _collect_pot_metrics(
                     continue
                 ef = formation_energy(res["pe"], int(res["natoms"]), e_ref, n_ref)
                 put(f"Ef_loop_{case_dir.name}_{el}", ef, el)
+                n_excess = abs(int(res['natoms']) - n_ref)
+                if n_excess:
+                    put(f"Ef_loop_per_defect_{case_dir.name}_{el}", ef / n_excess, el)
 
     # Alloys: lattice constant.
     alloy_root = pot_dir / "alloy_lc"
@@ -473,8 +524,8 @@ def build_pot_tag_json(cfg: PotentialConfig, run_dir: str | Path = ".") -> Path:
     """Parse this pot's logs and write ``<run_dir>/<pot_name>/<pot_name>.json``.
 
     Named after the potential (not a fixed ``tag.json``) so the exact same
-    filename is used once promoted into ``gz_toolkit/pot_infobank/`` (see
-    ``gz_toolkit.pot_infobank.promote_tag_json``) — no rename needed there.
+    filename identifies it in the run dir. A copy goes into the pot_infobank (see
+    ``gz_toolkit.pot_infobank.save_potinfo``, saved there as ``pot_info.json``).
 
     This is a minimal record — just what structure-building code needs to
     go from ``pot="gao2011"`` to an actual cell: ``pot_name``, ``type_map``,
@@ -513,11 +564,23 @@ def build_pot_tag_json(cfg: PotentialConfig, run_dir: str | Path = ".") -> Path:
             alloy_lc.setdefault(pair, {})[comp] = value
     if alloy_lc:
         lc["alloys"] = alloy_lc
+    thermal_lc = {}
+    for key, value in metrics.items():
+        if key.startswith("thermal_lc_") and not key.startswith(("thermal_lc_x_", "thermal_lc_y_", "thermal_lc_z_")):
+            tag, _, temperature = key[len("thermal_lc_"):].rpartition("_")
+            thermal_lc.setdefault(tag, {})[temperature] = value
     record = {
         "pot_name": cfg.potential.pot_name,
         "type_map": cfg.potential.type_map,
         "masses": cfg.potential.masses,
         "lc": lc,
+        "thermal_lc": thermal_lc,
+        # what's needed to actually run the potential (see pot_infobank)
+        "kind": cfg.potential.kind,
+        "pot_lines": cfg.potential.pot_lines,
+        "potential_files": list(cfg.potential.potential_files),
+        "crystal_structures": cfg.potential.crystal_structures,
+        "reference": dict(cfg.potential.reference or {}),
         "updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     out_dir = root / cfg.potential.pot_name
@@ -595,6 +658,8 @@ def _write_one_summary(
     all_keys = {k for k in all_keys if not k.startswith("elastic_raw_")}
 
     def sort_key(k: str) -> tuple:
+        if k.startswith("thermal_"):
+            return (0.5, k)
         if k.startswith("lc_"):
             return (0, k)
         if k.startswith("Ecoh_"):

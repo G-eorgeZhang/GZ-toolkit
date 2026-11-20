@@ -3,8 +3,7 @@ GZ-toolkit (import name: gz_toolkit) — atomistic structures and potential work
 
 Provides tools for building crystal structures, creating defects
 (voids, dislocation loops, Frenkel pairs), and merging atomistic
-configurations for LAMMPS molecular dynamics simulations, HPC potential testing,
-and guided EAM/FS/HE potential generation.
+configurations for LAMMPS molecular dynamics simulations and HPC potential testing.
 
 Submodules are imported lazily (PEP 562): ``import gz_toolkit`` is cheap,
 and heavy dependencies (pymatgen, pandas) are only loaded when the
@@ -17,10 +16,6 @@ __version__ = "0.2.0"
 
 # Map of public attribute -> submodule that provides it.
 _LAZY_ATTRS = {
-    # EAM/FS/HE potential generation
-    "EAMModel": "gz_toolkit.eamGen",
-    "FitOptions": "gz_toolkit.eamGen",
-    "fit_model": "gz_toolkit.eamGen",
     # Core
     "Modlmp_LmpData": "gz_toolkit.core.modlmp",
     # Crystal builder
@@ -51,7 +46,10 @@ _LAZY_ATTRS = {
     "build_pot_tag_json": "gz_toolkit.potential_testing",
     "write_grouped_summaries": "gz_toolkit.potential_testing",
     # Pot infobank
+    "save_potinfo": "gz_toolkit.pot_infobank",
     "promote_tag_json": "gz_toolkit.pot_infobank",
+    "list_potentials": "gz_toolkit.pot_infobank",
+    "pot_dir": "gz_toolkit.pot_infobank",
     "load_tag": "gz_toolkit.pot_infobank",
     "get_lc": "gz_toolkit.pot_infobank",
     # Analyze — energy/elastic-modulus formulas

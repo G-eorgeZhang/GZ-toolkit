@@ -165,6 +165,75 @@ class Modlmp_LmpData(lmpData):
         return n_del
 
     # ------------------------------------------------------------------
+    # Edge dislocation — remove half-plane(s), then shrink the box along y.
+    #
+    # Overrides lmpData.create_edge_dislocation. The atom deletion is the
+    # same; only the box shrink differs. The parent rebuilt the box with
+    # lattice_2_lmpbox (origin reset to 0) while keeping fractional coords,
+    # so ylo stayed put and yhi moved down by the full 0.5*nedges*burgerm:
+    # every atom slid toward ylo and the core moved. Here the shrink is
+    # about the box center: ylo moves up and yhi moves down by half the
+    # shrink each, so the box center (and a centered core) keeps its
+    # Cartesian position, consistent with the symmetric add_vacuum above.
+    # ------------------------------------------------------------------
+
+    def create_edge_dislocation(self, burgerm, nedges=1, fy_start=None, add_vacuum=False,
+                                direction=2, lvac=20.0, reset_ids=True):
+        """
+        Insert nedges (1 or 2) edge dislocation(s), y || Burgers vector,
+        z || glide-plane normal, x || line direction.
+
+        A slab of width ~burgerm is removed at fy_start in the upper half
+        (z > 0.5) and the box is shrunk along its b-vector by
+        0.5 * nedges * burgerm, symmetrically about the box center.
+        """
+        self.zero_coords()
+        buffer = burgerm * 0.03
+        fthres = np.dot(np.array([-0.1, -0.1, -0.1]), self.box.inv_matrix)
+        fyshift_lower = np.dot(np.array([0.0, burgerm / 2.0 + buffer, 0.0]), self.box.inv_matrix)
+        fyshift_upper = np.dot(np.array([0.0, burgerm / 2.0 - buffer, 0.0]), self.box.inv_matrix)
+        if nedges == 1:
+            fy_start = [fy_start] if isinstance(fy_start, float) else [0.5]
+            zmin = [0.5 + fthres[2]]
+            zmax = [1.0]
+        elif nedges == 2:
+            fy_start = [fy_start, fy_start + 0.5] if isinstance(fy_start, float) else [0.25, 0.75]
+            zmin = [0.5 + fthres[2], 0 + fthres[2]]
+            zmax = [1.0, 0.5 + fthres[2]]
+        else:
+            raise ValueError("nedges must be 1 or 2.")
+        for i in range(nedges):
+            xlim = [fthres[0], 1.0]
+            ylim = [fy_start[i] - fyshift_lower[1], fy_start[i] + fyshift_upper[1]]
+            zlim = [zmin[i], zmax[i]]
+            self.select_by_coords(xlim=xlim, ylim=ylim, zlim=zlim,
+                                  Fractional=True, style="EXCLUDE", delete=True)
+
+        # Symmetric shrink: scale the b-vector, keep fractional coords, and
+        # shift the origin by half the change of b so the center is fixed.
+        old_matrix = np.array(self.box.matrix, dtype=float)
+        old_origin = np.array(self.box.origin, dtype=float)
+        scale = (self.box.lengths[1] - 0.5 * nedges * burgerm) / self.box.lengths[1]
+        new_matrix = old_matrix.copy()
+        new_matrix[1, :] *= scale
+        new_origin = old_origin + 0.5 * (old_matrix[1] - new_matrix[1])
+
+        # Atoms are in the origin-0 frame after zero_coords (lmpData's
+        # frac<->cart conversions ignore the box origin).
+        frac = self.atoms[["xsn", "ysn", "zsn"]].to_numpy(dtype=float)
+        cart = new_origin + frac @ new_matrix
+        self.box, _ = lattice_2_lmpbox(Lattice(new_matrix), origin=tuple(new_origin))
+        self.atoms["x"] = cart[:, 0]
+        self.atoms["y"] = cart[:, 1]
+        self.atoms["z"] = cart[:, 2]
+        self.coords2fracts(normalization=False)
+
+        if add_vacuum:
+            self.add_vacuum(lvac=lvac, direction=direction, zero_coords=True)
+        if reset_ids:
+            self.reset_atom_ids()
+
+    # ------------------------------------------------------------------
     # Screw dislocation — OVITO-style: atan2 displacement field + box shear.
     #
     # Overrides lmpData.create_screw_dislocation (the old bcc/fcc/hcp

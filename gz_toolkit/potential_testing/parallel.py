@@ -29,9 +29,32 @@ from __future__ import annotations
 
 from pathlib import Path
 import textwrap
+from dataclasses import replace
+import shlex
 
 from gz_toolkit.jobs.template_engine import JobTemplate
 from gz_toolkit.potential_testing.config import PotentialConfig
+
+# Shared catalog: input filename, case-directory glob, optional workflow flag.
+# Status inspects all existing groups; job emission selects enabled groups.
+LAMMPS_GROUPS = {
+    "benchmarks": ("in.benchmark.lammps", "benchmarks/*/*", None),
+    "neb": ("in.neb.lammps", "neb/*/*", None),
+    "thermal_lc": ("in.thermal.lammps", "thermal_lc/*/*", "include_thermal_lc"),
+    "point_defects": ("in.relax.lammps", "point_defects/*/*", None),
+    "point_defects_alloy": ("in.relax.lammps", "point_defects_alloy/*/*/*/*", "include_alloy_defects"),
+    "elastic": ("in.elastic", "elastic/*", "include_elastic"),
+    "loops": ("in.relax.lammps", "loops/*/*", "include_dislocation_loops"),
+    "alloy_lc": ("in.alloy.lammps", "alloy_lc/*/*", "include_alloy_suite"),
+    "gas_complexes": ("in.relax.lammps", "gas_complexes/*/*", "include_gas_complexes"),
+}
+
+
+def _work_groups(config: PotentialConfig) -> list[tuple[str, str]]:
+    return [(name, input_name) for name, (input_name, _, flag) in LAMMPS_GROUPS.items()
+            if (flag is None or getattr(config.workflow, flag))
+            and (name != 'benchmarks' or config.workflow.benchmark_cases or config.workflow.include_surfaces)
+            and (name != 'neb' or config.workflow.neb_cases)]
 
 
 # ---------------------------------------------------------------------------
@@ -43,8 +66,12 @@ def _render_header(
     config: PotentialConfig,
     jobname: str,
     extra_modules: list[str] | None = None,
+    cpu_only: bool = False,
 ) -> str:
     hpc = config.hpc
+    if cpu_only:
+        hpc = replace(hpc, device='cpu', gpus_per_node=0, ntasks=hpc.preprocess_ntasks,
+                      partition_key=hpc.preprocess_partition_key or hpc.partition_key)
     tpl = JobTemplate(cluster=hpc.cluster) if hpc.cluster else JobTemplate()
 
     modules = list(hpc.modules)
@@ -81,7 +108,10 @@ def _render_header(
             lines = text.splitlines()
             lines.insert(1, gres_line)
             text = "\n".join(lines)
-    return text
+    lines = text.splitlines()
+    index = max([i for i, line in enumerate(lines) if line.startswith('#SBATCH')] or [0]) + 1
+    lines[index:index] = ['set -e', 'set -o pipefail']
+    return '\n'.join(lines) + '\n'
 
 
 # ---------------------------------------------------------------------------
@@ -91,10 +121,18 @@ def _render_header(
 
 def _run_lammps(config: PotentialConfig, input_name: str) -> str:
     hpc = config.hpc
-    cmd = hpc.run_command
+    cmd = hpc.neb_run_command if input_name == 'in.neb.lammps' else hpc.run_command
+    if input_name == 'in.neb.lammps':
+        replicas = config.workflow.neb_replicas
+        if replicas < 3 or hpc.ntasks % replicas:
+            raise ValueError('NEB needs ntasks divisible by neb_replicas (>=3).')
+        cmd = cmd.replace('{{REPLICAS}}', str(replicas)).replace('{{RANKS_PER_REPLICA}}', str(hpc.ntasks // replicas))
     cmd = cmd.replace("{{NTASKS}}", str(hpc.ntasks))
     cmd = cmd.replace("{{INPUT}}", input_name)
-    cmd = cmd.replace("{{LAMMPS_BIN}}", hpc.lammps_binary_path or "lmp_mpi")
+    binary = shlex.quote(hpc.lammps_binary_path or 'lmp_mpi')
+    if '{{LAMMPS_ARGS}}' not in cmd and hpc.lammps_args:
+        binary += ' ' + hpc.lammps_args
+    cmd = cmd.replace("{{LAMMPS_BIN}}", binary).replace('{{LAMMPS_ARGS}}', hpc.lammps_args)
     if hpc.lammps_src_path:
         cmd = f"export LD_LIBRARY_PATH={hpc.lammps_src_path}:$LD_LIBRARY_PATH\n{cmd}"
     return cmd
@@ -102,7 +140,7 @@ def _run_lammps(config: PotentialConfig, input_name: str) -> str:
 
 def _run_seakmc(config: PotentialConfig) -> str:
     # SEAKMC parallel driver — uses mpirun rather than srun for portability.
-    return f"mpirun -np {config.hpc.ntasks} python run_seakmc_p.py"
+    return config.hpc.seakmc_run_command.replace('{{NTASKS}}', str(config.hpc.ntasks)).replace('{{PYTHON}}', shlex.quote(config.hpc.python_executable))
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +169,7 @@ def _build_defects_body(config: PotentialConfig, pot_config_path: Path, project_
     return (
         "# --- Stage 2: build defect / alloy / gas case dirs from relaxed reference ---\n"
         f'cd "{project_root.resolve()}"\n'
-        f'python -m gz_toolkit.potential_testing.cli build-defects '
+        f'{shlex.quote(config.hpc.python_executable)} -m gz_toolkit.potential_testing.cli build-defects '
         f'--pot-config "{pot_config_path.resolve()}" --run-dir "{project_root.resolve()}"\n'
     )
 
@@ -144,58 +182,20 @@ def _summarize_pot_body(config: PotentialConfig, pot_config_path: Path, project_
     return (
         "# --- Final: build this pot's <pot_name>.json (and promote it, if configured) ---\n"
         f'cd "{project_root.resolve()}"\n'
-        f'python -m gz_toolkit.potential_testing.cli summarize-pot '
+        f'{shlex.quote(config.hpc.python_executable)} -m gz_toolkit.potential_testing.cli summarize-pot '
         f'--pot-config "{pot_config_path.resolve()}" --run-dir "{project_root.resolve()}"\n'
     )
 
 
 def _list_case_dirs(pot_dir: Path, group: str, input_name: str) -> list[tuple[Path, str]]:
     """Return (case_dir, lammps_input_filename) pairs for a work-group."""
-    if group == "point_defects":
-        if not (pot_dir / "point_defects").is_dir():
-            return []
-        cases: list[tuple[Path, str]] = []
-        for el_dir in sorted((pot_dir / "point_defects").iterdir()):
-            if not el_dir.is_dir():
-                continue
-            for case_dir in sorted(el_dir.iterdir()):
-                if case_dir.is_dir():
-                    cases.append((case_dir, input_name))
-        return cases
-    if group == "elastic":
-        root = pot_dir / "elastic"
-        if not root.is_dir():
-            return []
-        # one level deep: elastic/<element> and elastic/<alloy_tag>
-        return [(c, input_name) for c in sorted(root.iterdir()) if c.is_dir()]
-    if group == "loops":
-        root = pot_dir / "loops"
-        if not root.is_dir():
-            return []
-        return [(c, input_name) for el in sorted(root.iterdir()) if el.is_dir()
-                for c in sorted(el.iterdir()) if c.is_dir()]
-    if group == "disloc_lines":
-        return []  # not implemented; never executed
-    if group == "alloy_lc":
-        root = pot_dir / "alloy_lc"
-        if not root.is_dir():
-            return []
-        return [(c, "in.alloy.lammps") for pair in sorted(root.iterdir()) if pair.is_dir()
-                for c in sorted(pair.iterdir()) if c.is_dir()]
-    if group == "gas_complexes":
-        root = pot_dir / "gas_complexes"
-        if not root.is_dir():
-            return []
-        return [(c, input_name) for pair in sorted(root.iterdir()) if pair.is_dir()
-                for c in sorted(pair.iterdir()) if c.is_dir()]
+    if group in LAMMPS_GROUPS:
+        default_input, pattern, _ = LAMMPS_GROUPS[group]
+        filename = input_name or default_input
+        return [(case, filename) for case in sorted(pot_dir.glob(pattern))
+                if case.is_dir() and (case / filename).is_file()]
     if group == "seakmc":
-        cases: list[tuple[Path, str]] = []
-        for el_dir in sorted((pot_dir / "point_defects").glob("*")) if (pot_dir / "point_defects").is_dir() else []:
-            for case_dir in sorted(el_dir.iterdir()) if el_dir.is_dir() else []:
-                meb = case_dir / "meb"
-                if meb.is_dir():
-                    cases.append((meb, ""))
-        return cases
+        return [(p, '') for p in sorted(pot_dir.rglob('meb')) if (p / 'input.yaml').is_file() and (p / 'run_seakmc_p.py').is_file()]
     return []
 
 
@@ -275,16 +275,9 @@ def _all_stages_body(cfg: PotentialConfig, pot_config_path: Path, project_root: 
     parts: list[str] = [
         _reference_body(cfg, project_root),
         _build_defects_body(cfg, pot_config_path, project_root),
-        _runtime_group_body(cfg, pot_dir, "point_defects", "in.relax.lammps"),
     ]
-    if cfg.workflow.include_elastic:
-        parts.append(_runtime_group_body(cfg, pot_dir, "elastic", "in.elastic"))
-    if cfg.workflow.include_dislocation_loops:
-        parts.append(_runtime_group_body(cfg, pot_dir, "loops", "in.relax.lammps"))
-    if cfg.workflow.include_alloy_suite:
-        parts.append(_runtime_group_body(cfg, pot_dir, "alloy_lc", "in.alloy.lammps"))
-    if cfg.workflow.include_gas_complexes:
-        parts.append(_runtime_group_body(cfg, pot_dir, "gas_complexes", "in.relax.lammps"))
+    for group, input_name in _work_groups(cfg):
+        parts.append(_runtime_group_body(cfg, pot_dir, group, input_name))
     if cfg.workflow.seakmc_enabled:
         parts.append(_runtime_group_body(cfg, pot_dir, "seakmc", ""))
     parts.append(_summarize_pot_body(cfg, pot_config_path, project_root))
@@ -343,7 +336,7 @@ def _emit_paral3(cfg: PotentialConfig, project_root: Path, pot_inputs_dir: Path)
     submit.append('echo "  reference: $ref_id"')
 
     # Build-defects job
-    bd_text = _render_header(cfg, jobname=f"{cfg.potential.pot_name}_bd") + "\n" + \
+    bd_text = _render_header(cfg, jobname=f"{cfg.potential.pot_name}_bd", cpu_only=True) + "\n" + \
               _build_defects_body(cfg, pot_json, project_root) + "\ndate\n"
     bd_path = pot_dir / "build_defects.job"
     bd_path.write_text(bd_text, encoding="utf-8")
@@ -353,15 +346,7 @@ def _emit_paral3(cfg: PotentialConfig, project_root: Path, pot_inputs_dir: Path)
     # Per-work-group jobs (deferred reading of case lists at runtime — but the
     # cases don't exist yet at python time. We still emit a static body that
     # walks the directory at job-execution time.)
-    groups: list[tuple[str, str]] = [("point_defects", "in.relax.lammps")]
-    if cfg.workflow.include_elastic:
-        groups.append(("elastic", "in.elastic"))
-    if cfg.workflow.include_dislocation_loops:
-        groups.append(("loops", "in.relax.lammps"))
-    if cfg.workflow.include_alloy_suite:
-        groups.append(("alloy_lc", "in.alloy.lammps"))
-    if cfg.workflow.include_gas_complexes:
-        groups.append(("gas_complexes", "in.relax.lammps"))
+    groups = _work_groups(cfg)
 
     last_id_var = "bd_id"
     for group, input_name in groups:
@@ -382,7 +367,7 @@ def _emit_paral3(cfg: PotentialConfig, project_root: Path, pot_inputs_dir: Path)
         text = _render_header(cfg, jobname=f"{cfg.potential.pot_name}_seakmc") + "\n" + body + "\ndate\n"
         path = pot_dir / "seakmc.job"
         path.write_text(text, encoding="utf-8")
-        submit.append(f'seakmc_id=$(sbatch --parsable --dependency=afterok:$point_defects_id "{path}")')
+        submit.append(f'seakmc_id=$(sbatch --parsable --dependency=afterok:${last_id_var} "{path}")')
         submit.append('echo "  seakmc: $seakmc_id"')
         # seakmc branches off point_defects, in parallel with any later groups —
         # so the final summarize_pot job must wait on both branches, not just
@@ -392,7 +377,7 @@ def _emit_paral3(cfg: PotentialConfig, project_root: Path, pot_inputs_dir: Path)
     # Final job: build this pot's <pot_name>.json (and promote it, if configured)
     # once every branch above has finished — no manual summarize-pot needed.
     dep_clause = ":".join(f"${v}" for v in dep_ids)
-    sm_text = _render_header(cfg, jobname=f"{cfg.potential.pot_name}_summarize") + "\n" + \
+    sm_text = _render_header(cfg, jobname=f"{cfg.potential.pot_name}_summarize", cpu_only=True) + "\n" + \
               _summarize_pot_body(cfg, pot_json, project_root) + "\ndate\n"
     sm_path = pot_dir / "summarize_pot.job"
     sm_path.write_text(sm_text, encoding="utf-8")
@@ -411,25 +396,16 @@ def _runtime_group_body(cfg: PotentialConfig, pot_dir: Path, group: str, input_n
     if group == "seakmc":
         cmd = _run_seakmc(cfg)
         return textwrap.dedent(f"""\
-            for d in "{abs_pot}"/point_defects/*/*/meb; do
-              [ -d "$d" ] || continue
+            while IFS= read -r -d '' driver; do
+              d=$(dirname "$driver")
               cd "$d"
               {cmd}
-            done
+            done < <(find "{abs_pot}" -type f -path '*/meb/run_seakmc_p.py' -print0)
             """)
     cmd = _run_lammps(cfg, input_name)
-    if group == "point_defects":
-        glob = f'"{abs_pot}"/point_defects/*/*'
-    elif group == "elastic":
-        glob = f'"{abs_pot}"/elastic/*'
-    elif group == "loops":
-        glob = f'"{abs_pot}"/loops/*/*'
-    elif group == "alloy_lc":
-        glob = f'"{abs_pot}"/alloy_lc/*/*'
-    elif group == "gas_complexes":
-        glob = f'"{abs_pot}"/gas_complexes/*/*'
-    else:
+    if group not in LAMMPS_GROUPS:
         return f"# unknown group: {group}\n"
+    glob = f'"{abs_pot}"/{LAMMPS_GROUPS[group][1]}'
     return textwrap.dedent(f"""\
         for d in {glob}; do
           [ -d "$d" ] || continue
@@ -471,7 +447,7 @@ def _emit_paral4(cfg: PotentialConfig, project_root: Path, pot_inputs_dir: Path)
         ref_ids_var.append(var)
         submit.append(f'{var}=$(sbatch --parsable "{ref_path}")')
         submit.append(f'echo "  ref/{el}: ${var}"')
-    ref_dep = ",".join(f"${v}" for v in ref_ids_var) if ref_ids_var else ""
+    ref_dep = ":".join(f"${v}" for v in ref_ids_var) if ref_ids_var else ""
 
     # Build-defects + scatter job (single job that runs python build-defects
     # and then sbatches every per-case job).
@@ -479,10 +455,10 @@ def _emit_paral4(cfg: PotentialConfig, project_root: Path, pot_inputs_dir: Path)
     bd_body += textwrap.dedent(f"""\
 
         # --- Stage 3: scatter sbatch every case ---
-        python -m gz_toolkit.potential_testing.cli scatter-cases \\
+        {shlex.quote(cfg.hpc.python_executable)} -m gz_toolkit.potential_testing.cli scatter-cases \\
             --pot-config "{pot_json.resolve()}" --run-dir "{project_root.resolve()}"
         """)
-    text = _render_header(cfg, jobname=f"{cfg.potential.pot_name}_bd_scatter") + "\n" + bd_body + "\ndate\n"
+    text = _render_header(cfg, jobname=f"{cfg.potential.pot_name}_bd_scatter", cpu_only=True) + "\n" + bd_body + "\ndate\n"
     bd_path = pot_dir / "build_defects_scatter.job"
     bd_path.write_text(text, encoding="utf-8")
     dep_clause = f"--dependency=afterok:{ref_dep}" if ref_dep else ""
@@ -508,15 +484,7 @@ def scatter_cases(cfg: PotentialConfig, project_root: Path, pot_inputs_dir: Path
     written: list[Path] = []
     submitted: list[str] = []
 
-    groups: list[tuple[str, str]] = [("point_defects", "in.relax.lammps")]
-    if cfg.workflow.include_elastic:
-        groups.append(("elastic", "in.elastic"))
-    if cfg.workflow.include_dislocation_loops:
-        groups.append(("loops", "in.relax.lammps"))
-    if cfg.workflow.include_alloy_suite:
-        groups.append(("alloy_lc", "in.alloy.lammps"))
-    if cfg.workflow.include_gas_complexes:
-        groups.append(("gas_complexes", "in.relax.lammps"))
+    groups = _work_groups(cfg)
 
     case_to_jobid: dict[Path, str] = {}
 
@@ -577,7 +545,7 @@ def scatter_cases(cfg: PotentialConfig, project_root: Path, pot_inputs_dir: Path
     # (i.e. sbatch was available above).
     pot_json = pot_inputs_dir / f"{cfg.potential.pot_name}.json"
     sm_path = pot_dir / "summarize_pot.job"
-    sm_text = _render_header(cfg, jobname=f"{cfg.potential.pot_name}_summarize") + "\n" + \
+    sm_text = _render_header(cfg, jobname=f"{cfg.potential.pot_name}_summarize", cpu_only=True) + "\n" + \
               _summarize_pot_body(cfg, pot_json, project_root) + "\ndate\n"
     sm_path.write_text(sm_text, encoding="utf-8")
     written.append(sm_path)
@@ -604,5 +572,5 @@ def _sbatch(job_path: Path, dependency: str | None = None) -> str | None:
     try:
         out = subprocess.check_output(cmd, text=True).strip()
         return out.split(";")[0]  # sbatch --parsable returns "<jobid>" or "<jobid>;<cluster>"
-    except subprocess.CalledProcessError:
-        return None
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f'sbatch failed for {job_path}; stopping instead of losing a dependency.') from exc

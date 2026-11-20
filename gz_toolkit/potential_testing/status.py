@@ -13,19 +13,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from gz_toolkit.potential_testing.config import PotentialConfig
-from gz_toolkit.potential_testing.parallel import _list_case_dirs
+from gz_toolkit.potential_testing.parallel import LAMMPS_GROUPS, _list_case_dirs
 
-STATES = ("done", "failed", "running", "pending")
+STATES = ("done", "failed", "unconverged", "running", "pending")
 
 # Work groups walked per potential: (group name, lammps input filename).
-_GROUPS: list[tuple[str, str]] = [
-    ("point_defects", "in.relax.lammps"),
-    ("elastic", "in.elastic"),
-    ("loops", "in.relax.lammps"),
-    ("alloy_lc", "in.alloy.lammps"),
-    ("gas_complexes", "in.relax.lammps"),
-    ("seakmc", ""),
-]
+_GROUPS = [(name, values[0]) for name, values in LAMMPS_GROUPS.items()] + [("seakmc", "")]
 
 
 def classify_case(case_dir: Path) -> str:
@@ -51,7 +44,7 @@ def _classify_seakmc(meb_dir: Path) -> str:
     if (meb / "Seakmc_summary.csv").is_file() or (meb / "SPOut").is_dir():
         return "done"
     # any output beyond the inputs we wrote -> probably running
-    started = any(p.name not in ("input.yaml", "run_seakmc_p.py")
+    started = any(p.name not in ("input.yaml", "run_seakmc_p.py", 'seakmc_setup.json')
                   for p in meb.iterdir()) if meb.is_dir() else False
     return "running" if started else "pending"
 
@@ -78,7 +71,17 @@ def collect_status(
         cases = _list_case_dirs(pot_dir, group, input_name)
         entries: list[tuple[str, str]] = []
         for case_dir, _ in cases:
-            state = _classify_seakmc(case_dir) if group == "seakmc" else classify_case(case_dir)
+            if group == "thermal_lc":
+                from gz_toolkit.potential_testing.thermal import analyze_thermal_case
+                state = analyze_thermal_case(case_dir)["state"]
+            elif group == 'benchmarks':
+                from .benchmarks import read_result
+                state = read_result(case_dir)[2]
+            elif group == 'neb':
+                from .neb import analyze_neb_case
+                state = analyze_neb_case(case_dir)['state']
+            else:
+                state = _classify_seakmc(case_dir) if group == "seakmc" else classify_case(case_dir)
             entries.append((str(Path(case_dir).relative_to(root)), state))
         if entries:
             out[group] = entries
@@ -95,7 +98,7 @@ def format_status_table(
     with ``verbose`` the failed and running case paths are listed underneath.
     """
     lines: list[str] = []
-    header = f"{'potential':<20} {'group':<16} {'done':>5} {'fail':>5} {'run':>5} {'wait':>5}"
+    header = f"{'potential':<20} {'group':<20} {'done':>5} {'fail':>5} {'unconv':>6} {'run':>5} {'wait':>5}"
     lines.append(header)
     lines.append("-" * len(header))
     for pot, groups in status_by_pot.items():
@@ -104,11 +107,11 @@ def format_status_table(
             for _, state in entries:
                 counts[state] = counts.get(state, 0) + 1
             lines.append(
-                f"{pot:<20} {group:<16} {counts['done']:>5} {counts['failed']:>5} "
+                f"{pot:<20} {group:<20} {counts['done']:>5} {counts['failed']:>5} {counts['unconverged']:>6} "
                 f"{counts['running']:>5} {counts['pending']:>5}"
             )
             if verbose:
                 for path, state in entries:
-                    if state in ("failed", "running"):
+                    if state in ("failed", "unconverged", "running"):
                         lines.append(f"    [{state}] {path}")
     return "\n".join(lines)

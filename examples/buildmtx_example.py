@@ -52,10 +52,10 @@ g.replicate(fcc_unit, 25, 25, 25, 3.615, "fcc_110_001_110_25x25x25.data")
 #
 # Once `gz-toolkit-potential-testing summarize-pot` has run for a potential
 # (automatically, at the end of its job chain — see the potential-testing
-# manual), its lc lives in <run_dir>/<pot_name>/<pot_name>.json, and gets
-# copied into gz_toolkit/pot_infobank/ if that potential's JSON sets
-# "promote_to_infobank". Here we fake up one such record (a tempdir standing
-# in for a real pot_infobank/) to show the lookup pattern end-to-end.
+# manual), its lc lives in <run_dir>/<pot_name>/<pot_name>.json, and is
+# saved to pot_infobank/<pot_name>/pot_info.json when the project's
+# settings.json sets "potinfo_savepath". Here we fake up one such record (a
+# tempdir standing in for a real pot_infobank/) to show the lookup pattern.
 
 import json
 import tempfile
@@ -63,7 +63,8 @@ from pathlib import Path
 from gz_toolkit.pot_infobank import load_tag, get_lc
 
 infobank_dir = Path(tempfile.mkdtemp())
-(infobank_dir / "bonny.json").write_text(json.dumps({
+(infobank_dir / "bonny").mkdir()
+(infobank_dir / "bonny" / "pot_info.json").write_text(json.dumps({
     "pot_name": "bonny",
     "type_map": {"Fe": 1, "Cr": 2},
     "masses": {"1": 55.845, "2": 51.996},

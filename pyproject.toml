@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "GZ-toolkit"
 version = "0.2.0"
-description = "Atomistic structure tools, HPC potential testing, and guided EAM/FS/HE potential generation."
+description = "Atomistic structure tools, HPC potential testing, and AI-human simulation workflows."
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Zhang" }]
@@ -35,16 +35,19 @@ Homepage = "https://github.com/zhang/GZ-toolkit"
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-cov"]
+workflow = ["PyYAML"]
 
 [project.scripts]
 gz-toolkit-potential-testing = "gz_toolkit.potential_testing.main:main"
-gz-toolkit-eamgen = "gz_toolkit.eamGen.cli:main"
+gz-toolkit-install-skill = "gz_toolkit.skills:main"
 
 [tool.setuptools.packages.find]
 include = ["gz_toolkit*"]
+namespaces = false
 
 [tool.setuptools.package-data]
-"gz_toolkit.eamGen" = ["skills/eamgen/SKILL.md", "skills/eamgen/references/*.md"]
+"gz_toolkit.defect" = ["templates/*.POSCAR"]
+"gz_toolkit.skills" = ["materials-simulation-skill/**/*", "materials-simulation-skill/SKILL.md"]
 gz_toolkit = [
     "jobs/templates/*.job",
     "jobs/templates/machines/*.job",

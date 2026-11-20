@@ -303,7 +303,7 @@ def _apply_loop_case(
         # type of the slab atom they're duplicated from, which is still the
         # placeholder type at this point in the build -- see module docstring.
         defects.add_111_loop(
-            loop_type="sil",
+            loop_type=config.workflow.loop_types[0],
             radius=loop_radius,
             lattice_const=lc,
             ff_elements=ff_elements,
@@ -316,7 +316,7 @@ def _apply_loop_case(
 
     if case_name == "SIL100":
         defects.add_100_loop(
-            loop_type="sil",
+            loop_type=config.workflow.loop_types[0],
             radius=loop_radius,
             lattice_const=lc,
             ff_elements=ff_elements,
@@ -678,6 +678,8 @@ def build_gas_complex_structure(
     structure_name: str,
     relaxed_lc: float | None = None,
     n_replicate: int | None = None,
+    composition_atpct: dict[str, float] | None = None,
+    seed: int | None = None,
 ) -> str:
     """Build (gas)_n(V)_m or (gas)_n(I)_m near the cell centre.
 
@@ -696,6 +698,9 @@ def build_gas_complex_structure(
     gas_type = int(config.potential.type_map[gas])
 
     data = _build_unit_cell(case_dir, config, structure_name, metal, n)
+    if composition_atpct:
+        _decorate_alloy_types(data, composition_atpct, config.potential.type_map,
+                             metal_type, np.random.default_rng(seed))
     c = np.asarray(data.get_center("cart"), dtype=float).reshape(3,)
 
     # --- defect side (built at lc=1; scaled below) ---
@@ -711,6 +716,8 @@ def build_gas_complex_structure(
             np.array([0.5, 0.5, 0.0]),
             np.array([0.5, 0.0, 0.5]),
         ]
+        if m_defect > len(offsets):
+            raise ValueError('This interstitial-cluster seed supports at most five inserted metal atoms; supply a reviewed larger-cluster structure.')
         for k in range(m_defect):
             off = offsets[k % len(offsets)]
             _add_interstitial_cart(data, c, off, metal_type)
@@ -731,11 +738,27 @@ def build_gas_complex_structure(
         np.array([-0.25, 0.0, 0.0]),
         np.array([0.0, -0.25, 0.0]),
     ]
-    for k in range(n_gas):
-        off = gas_offsets[k % len(gas_offsets)]
-        # Tiny irrational shift to avoid exact overlap when k > len(gas_offsets).
-        off = off + np.array([1e-3, 1e-3, 1e-3]) * (k // len(gas_offsets))
-        _add_interstitial_cart(data, c, off, gas_type)
+    # Gas-only references need an interstitial site, not an occupied host site.
+    origin = c if defect_kind == 'vacancy' and m_defect > 0 else c + _interstitial_offset(structure_name, 'tetra', 1.0)
+    candidates = []
+    for shell in range(max(1, int(np.ceil(n_gas ** (1 / 3))))):
+        for shift in ((shell, 0, 0), (-shell, 0, 0), (0, shell, 0), (0, -shell, 0), (0, 0, shell), (0, 0, -shell)):
+            for off in gas_offsets:
+                candidates.append(origin + np.asarray(shift) + off)
+    inserted = 0
+    matrix = np.asarray(data.box.matrix, dtype=float)
+    for position in candidates:
+        if inserted == n_gas:
+            break
+        xyz = data.atoms[['x', 'y', 'z']].to_numpy(dtype=float)
+        delta = (xyz - position) @ np.linalg.inv(matrix)
+        delta -= np.rint(delta)
+        if len(xyz) and np.min(np.linalg.norm(delta @ matrix, axis=1)) < 0.1:
+            continue
+        _add_interstitial_cart(data, position, np.zeros(3), gas_type)
+        inserted += 1
+    if inserted != n_gas:
+        raise ValueError('Could not place the gas atoms without overlaps; enlarge the cell or supply a reviewed cluster.')
 
     _scale_cell_to_lc(data, lc)
     data.initialization(normalization=False, style=1)

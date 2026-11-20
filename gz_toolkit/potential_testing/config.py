@@ -66,17 +66,28 @@ class PotentialMetadata:
     # Alloy elastic cells need to be a bit larger so the random composition
     # rounds reasonably; still one random realization -> treat Cij as estimate.
     size_elastic_alloy: int = 6
+    size_thermal_lc: int = 10
     potential_files: list[str] = field(default_factory=list)
     # Type of potential — selects HPC defaults and SEAKMC compatibility.
     # "classical" (eam/meam/hybrid), "ml" (mtp/snap), "universal" (chgnet/mace).
     kind: str = "classical"
-    # Whether/where to copy this pot's <pot_name>.json into gz_toolkit/pot_infobank/
-    # once its tests finish (see gz_toolkit.pot_infobank.promote_tag_json):
-    #   False (default) -> never copy.
-    #   True             -> copy to the cluster's path2gz_toolkit/pot_infobank/
-    #                        (hpc.cluster must be set; see cluster_info/<CLUSTER>/meta.json).
-    #   a path string    -> copy there verbatim, no validation.
-    promote_to_infobank: bool | str = False
+    # Where the potential comes from; written into the pot_infobank README.md.
+    #   paper, doi                (all potentials; authors optional)
+    #   github, matbench          (also needed when kind == "universal")
+    # Saving to the pot_infobank is controlled by potinfo_savepath in the
+    # project's root settings.json (see gz_toolkit.potential_testing.settings).
+    reference: dict[str, str] = field(default_factory=dict)
+
+
+REFERENCE_FIELDS = ("paper", "doi")
+UNIVERSAL_REFERENCE_FIELDS = ("paper", "doi", "github", "matbench")
+
+
+def missing_reference_fields(meta: PotentialMetadata) -> list[str]:
+    """Reference fields still empty for this potential (what to ask the user for)."""
+    wanted = UNIVERSAL_REFERENCE_FIELDS if meta.kind == "universal" else REFERENCE_FIELDS
+    ref = meta.reference or {}
+    return [k for k in wanted if not str(ref.get(k) or "").strip()]
 
 
 @dataclass
@@ -108,6 +119,12 @@ class HPCOptions:
     # when lmp_mpi was built without RPATH and depends on shared libs (e.g.
     # the LAMMPS src/ dir of a custom MTP-enabled build).
     lammps_src_path: str | None = None
+    python_executable: str = "python"
+    lammps_args: str = ""  # e.g. -k on g 1 -sf kk; backend-specific, never guessed
+    preprocess_partition_key: str | None = None
+    preprocess_ntasks: int = 1
+    seakmc_run_command: str = "mpirun -np {{NTASKS}} {{PYTHON}} run_seakmc_p.py"
+    neb_run_command: str = "srun -n {{NTASKS}} {{LAMMPS_BIN}} {{LAMMPS_ARGS}} -partition {{REPLICAS}}x{{RANKS_PER_REPLICA}} -in {{INPUT}}"
 
 
 @dataclass
@@ -132,6 +149,23 @@ class WorkflowOptions:
     include_dislocation_lines: bool = False
     include_alloy_suite: bool = False
     include_gas_complexes: bool = False
+    include_surfaces: bool = False
+    surface_millers: list[list[int]] = field(default_factory=lambda: [[1, 0, 0], [1, 1, 0], [1, 1, 1], [1, 1, 2]])
+    surface_thickness: float = 20.0
+    surface_vacuum: float = 20.0
+    loop_radius_factors: list[float] = field(default_factory=list)  # empty keeps loop_radius_factor
+    loop_types: list[str] = field(default_factory=lambda: ["sil"])
+    # Optional, explicit benchmark specs: c15, sft, dislocation, molecule, alloy_gas.
+    # See examples/potential_testing_manual.md for schemas and reference rules.
+    benchmark_cases: list[dict[str, Any]] = field(default_factory=list)
+    benchmark_force_tolerance: float = 1.0e-6
+    neb_cases: list[dict[str, Any]] = field(default_factory=list)
+    neb_replicas: int = 8
+    neb_force_tolerance: float = 1.0e-4
+    neb_iterations: int = 5000
+    seakmc_case_patterns: list[str] = field(default_factory=list)
+    seakmc_dactive: float | None = None
+    seakmc_searches: int = 10
 
     # Alloy point-defect formation energies (two_element_suites and
     # multi_element_suites compositions). Separate opt-in from
@@ -151,6 +185,27 @@ class WorkflowOptions:
     elastic_for_alloys: bool = False
     # Finite-deformation strain magnitude (the ELASTIC `up` variable).
     elastic_strain: float = 1.0e-6
+    elastic_cases: list[dict[str, Any]] = field(default_factory=list)
+
+    # Finite-temperature lattice constants: pure-element cases by default;
+    # alloy compositions from the configured suites require an explicit opt-in.
+    include_thermal_lc: bool = True
+    thermal_lc_for_alloys: bool = False
+    thermal_lc_temperatures: list[float] = field(default_factory=lambda: [600, 700, 800, 900, 1000, 1023])
+    thermal_lc_steps: int = 50000
+    thermal_lc_average_steps: int = 20000
+    thermal_lc_sample_every: int = 100
+    thermal_lc_timestep_ps: float = 0.001
+    thermal_lc_tdamp_steps: float = 100.0
+    thermal_lc_pdamp_steps: float = 1000.0
+    thermal_lc_pressure_bar: float = 0.0
+    thermal_lc_barostat: str = "iso"  # preserve shape; "aniso" is optional
+    thermal_lc_seed: int = 1729
+    # Flatness is a configurable screening heuristic, not a proof of equilibrium.
+    thermal_lc_block_steps: int = 4000
+    thermal_lc_max_relative_drift: float = 0.002
+    thermal_lc_max_block_spread: float = 0.005
+    thermal_lc_temperature_tolerance: float = 0.05
 
     # Geometry knobs previously hardcoded in structure_ops.py.
     dumbbell_sep_factor: float = 0.35   # dumbbell separation = factor * lc
@@ -222,6 +277,10 @@ def load_potential_configs(pot_inputs_dir: str | Path = "pot_inputs") -> list[Po
     root = Path(pot_inputs_dir)
     if not root.is_dir():
         raise FileNotFoundError(f"pot_inputs directory not found: {root}")
+
+    # Short names like 'gao2011' become '<name>_<system>_<year>' (json, potentials/, run dir).
+    from gz_toolkit.potential_testing.naming import normalize_pot_names
+    normalize_pot_names(root)
 
     configs: list[PotentialConfig] = []
     for f in sorted(root.iterdir()):

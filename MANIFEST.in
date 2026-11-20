@@ -1,5 +1,5 @@
-include README.md INSTALL.md CHANGELOG.md
+include README.md INSTALL.md CHANGELOG.md AGENTS.md
 recursive-include examples *.md *.json *.job *.py
-recursive-include gz_toolkit/eamGen/skills *.md
-include tests/test_eamgen.py
+recursive-include gz_toolkit/skills/materials-simulation-skill *.md *.py *.yaml *.example
+recursive-include tests test_*.py
 global-exclude __pycache__ *.py[cod]

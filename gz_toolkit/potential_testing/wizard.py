@@ -96,7 +96,7 @@ def run_init_wizard(root: str | Path = ".", *, input_fn=input, print_fn=print) -
     print_fn("")
 
     # ---- potential identity -------------------------------------------------
-    pot_name = _ask("Short name for this potential (used for folder names)",
+    pot_name = _ask("Short name for this potential, e.g. gao2011 or tao_2.31 (becomes gao_FeHe_2011 / tao_2.31_FeHe_ once elements are known)",
                     default="my_potential",
                     validate=lambda s: None if all(c.isalnum() or c in "._-" for c in s)
                     else "Use only letters, numbers, '.', '_' or '-'.",
@@ -129,6 +129,38 @@ def run_init_wizard(root: str | Path = ".", *, input_fn=input, print_fn=print) -
         if not fname:
             break
         potential_files.append(fname)
+
+    # ---- kind + reference (goes into the pot_infobank README.md) -----------
+    print_fn("")
+    kind = _ask("Potential type: classical (eam/meam/...), ml (mtp/snap/...), "
+                "universal (mace/chgnet/...)",
+                default="classical", parse=lambda s: s.lower(),
+                choices=("classical", "ml", "universal"),
+                input_fn=input_fn, print_fn=print_fn)
+    print_fn("Where does this potential come from? (leave blank if unknown; "
+             "`check` will remind you later)")
+    reference: dict[str, str] = {}
+    ref_questions = [("paper", "Paper title"), ("authors", "Authors (optional)"),
+                     ("doi", "DOI, e.g. 10.1016/j.jnucmat.2011.01.001")]
+    if kind == "universal":
+        ref_questions += [("github", "GitHub repository URL"),
+                          ("matbench", "Matbench Discovery link")]
+    for key, question in ref_questions:
+        val = input_fn(f"{question}: ").strip()
+        if val:
+            reference[key] = val
+
+    print_fn("")
+    print_fn("Save the tested potential (info, files, pot.inc, README.md) to a pot_infobank?")
+    print_fn("  true  = <project>/pot_infobank/")
+    print_fn("  false = do not save")
+    print_fn("  or a path, e.g. /lustre/.../shared  ->  <path>/pot_infobank/")
+    savepath_raw = _ask("potinfo_savepath", default="true",
+                        input_fn=input_fn, print_fn=print_fn)
+    low = str(savepath_raw).strip().lower()
+    potinfo_savepath: bool | str = (True if low in ("true", "yes", "y")
+                                   else False if low in ("false", "no", "n")
+                                   else str(savepath_raw).strip())
 
     # ---- elements ------------------------------------------------------------
     print_fn("")
@@ -165,6 +197,12 @@ def run_init_wizard(root: str | Path = ".", *, input_fn=input, print_fn=print) -
                           parse=lambda s: s.lower(), choices=("bcc", "fcc", "hcp"),
                           input_fn=input_fn, print_fn=print_fn)
             crystal_structures[el] = {"structure": struct}
+
+    from gz_toolkit.potential_testing.naming import canonical_pot_name
+    full_name = canonical_pot_name(pot_name, "".join(elements))
+    if full_name != pot_name:
+        print_fn(f"Potential folder name set to '{full_name}' (<name>_<system>_<year>).")
+        pot_name = full_name
 
     lc_default = _LC_GUESS.get(metals[0], 2.85) if metals else 2.85
     lc_initial = _ask("Starting lattice-constant guess in Angstrom "
@@ -233,6 +271,14 @@ def run_init_wizard(root: str | Path = ".", *, input_fn=input, print_fn=print) -
                     "Also compute elastic constants for this composition?\n"
                     "  (one random arrangement on a small cell — treat as an estimate)",
                     default=False, input_fn=input_fn, print_fn=print_fn)
+
+    wf.include_thermal_lc = _ask_yesno(
+        "Finite-temperature lattice constants for pure elements (600, 700, 800, 900, 1000, 1023 K; 50,000 NPT steps each)?",
+        default=True, input_fn=input_fn, print_fn=print_fn)
+    if wf.include_thermal_lc and (two_element_suites or multi_element_suites):
+        wf.thermal_lc_for_alloys = _ask_yesno(
+            "Also run finite-temperature lattice constants for the configured alloy compositions?",
+            default=False, input_fn=input_fn, print_fn=print_fn)
 
     if gases:
         wf.include_gas_complexes = _ask_yesno(
@@ -329,6 +375,8 @@ def run_init_wizard(root: str | Path = ".", *, input_fn=input, print_fn=print) -
             crystal_structures=crystal_structures,
             lc_initial=float(lc_initial),
             potential_files=potential_files,
+            kind=kind,
+            reference=reference,
         ),
         workflow=wf,
         hpc=hpc,
@@ -343,12 +391,29 @@ def run_init_wizard(root: str | Path = ".", *, input_fn=input, print_fn=print) -
     cfg_path = Path(root_path) / "pot_inputs" / f"{pot_name}.json"
     save_potential_config(cfg, cfg_path)
 
+    from gz_toolkit.potential_testing.settings import load_project_settings, settings_path
+    import json as _json
+    settings = load_project_settings(root_path)
+    settings["potinfo_savepath"] = potinfo_savepath
+    s_path = settings_path(root_path)
+    if s_path is None or s_path.suffix == ".json":
+        s_path = Path(root_path) / "settings.json"
+        s_path.write_text(_json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+    else:
+        print_fn(f"Note: set potinfo_savepath: {potinfo_savepath!r} in {s_path} by hand.")
+
+    from gz_toolkit.potential_testing.config import missing_reference_fields
+    still_missing = missing_reference_fields(cfg.potential)
+
     print_fn("")
     print_fn(f"Config written to: {cfg_path}")
     if problems:
         print_fn("Heads-up — the validator flagged these:")
         for p in problems:
             print_fn(f"  - {p}")
+    if still_missing:
+        print_fn(f"Reference info still missing: {', '.join(still_missing)} — add it under "
+                 f"\"potential\" -> \"reference\" in {cfg_path.name}.")
     print_fn("")
     print_fn("Next steps:")
     if potential_files:

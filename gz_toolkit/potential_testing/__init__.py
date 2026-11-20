@@ -30,6 +30,9 @@ from gz_toolkit.potential_testing.pipeline import (
 from gz_toolkit.potential_testing.parallel import emit_jobs, scatter_cases
 from gz_toolkit.potential_testing.seakmc_runner import emit_seakmc_inputs
 from gz_toolkit.potential_testing.elastic import build_elastic_cases, render_elastic_inputs
+from gz_toolkit.potential_testing.thermal import build_thermal_cases, render_thermal_input, analyze_thermal_case
+from gz_toolkit.potential_testing.benchmarks import build_benchmarks, collect_benchmark_metrics
+from gz_toolkit.potential_testing.neb import build_neb_cases, analyze_neb_case
 from gz_toolkit.potential_testing.summary import (
     build_pot_tag_json,
     write_summary,
@@ -70,6 +73,13 @@ __all__ = [
     # Elastic constants
     "build_elastic_cases",
     "render_elastic_inputs",
+    "build_thermal_cases",
+    "render_thermal_input",
+    "analyze_thermal_case",
+    "build_benchmarks",
+    "collect_benchmark_metrics",
+    "build_neb_cases",
+    "analyze_neb_case",
     # Summary
     "build_pot_tag_json",
     "write_summary",

@@ -24,6 +24,41 @@ def validate_config(cfg: PotentialConfig) -> list[str]:
     pot = cfg.potential
     wf = cfg.workflow
     hpc = cfg.hpc
+    from gz_toolkit.potential_testing.thermal import validate_thermal_options
+    problems.extend(validate_thermal_options(cfg))
+    if wf.benchmark_force_tolerance <= 0:
+        problems.append('benchmark_force_tolerance must be positive (force units eV/angstrom).')
+    allowed = {'c15', 'sft', 'surface', 'molecule', 'alloy_gas', 'dislocation'}
+    for spec in wf.benchmark_cases:
+        if spec.get('kind') not in allowed:
+            problems.append(f"Unknown benchmark kind: {spec.get('kind')}")
+    for spec in wf.neb_cases:
+        if spec.get('endpoints_relaxed') is not True:
+            problems.append('NEB requires reviewed, relaxed endpoints (endpoints_relaxed=true).')
+    if hpc.device not in ('cpu', 'gpu'):
+        problems.append('device must be cpu or gpu.')
+    if hpc.device == 'gpu' and hpc.gpus_per_node < 1:
+        problems.append('GPU jobs need gpus_per_node >= 1 and a backend-specific run command/arguments.')
+    if hpc.preprocess_ntasks < 1:
+        problems.append('preprocess_ntasks must be positive.')
+    if wf.seakmc_case_patterns and (wf.seakmc_dactive is None or wf.seakmc_dactive <= 0):
+        problems.append('Extended SEAKMC cases require an explicit positive seakmc_dactive in angstrom.')
+    if wf.seakmc_searches < 1:
+        problems.append('seakmc_searches must be positive.')
+    if wf.seakmc_enabled and (pot.kind != 'classical' or hpc.device == 'gpu') and not wf.seakmc_template_path:
+        problems.append('ML/GPU SEAKMC needs a tested seakmc_template_path for its in-process force evaluator; executable LAMMPS support alone is insufficient.')
+    if wf.neb_cases and (wf.neb_replicas < 3 or hpc.ntasks % wf.neb_replicas):
+        problems.append('NEB needs >=3 replicas and ntasks divisible by the replica count.')
+    if wf.neb_cases and hpc.device == 'gpu':
+        from .config import HPCOptions
+        if hpc.neb_run_command == HPCOptions().neb_run_command:
+            problems.append('GPU NEB requires an explicit neb_run_command with replica-aware GPU binding.')
+    if wf.surface_thickness <= 0 or wf.surface_vacuum <= 0:
+        problems.append('Surface thickness and vacuum must be positive lengths in angstrom.')
+    if any(t not in ('sil', 'vl') for t in wf.loop_types) or not wf.loop_types:
+        problems.append('loop_types must contain sil and/or vl.')
+    if any(r <= 0 for r in wf.loop_radius_factors):
+        problems.append('loop_radius_factors must be positive.')
 
     # --- type_map / masses consistency -----------------------------------
     type_ids = set(pot.type_map.values())

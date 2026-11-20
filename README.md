@@ -1,6 +1,6 @@
 # GZ-toolkit
 
-Atomistic structure tools, HPC potential testing, and guided EAM potential generation for computational materials science.
+Atomistic structure tools, HPC potential testing, and AI-human simulation workflows for computational materials science.
 
 `GZ-toolkit` (import name: `gz_toolkit`) provides tools for:
 
@@ -9,10 +9,19 @@ Atomistic structure tools, HPC potential testing, and guided EAM potential gener
 - **Merging structures** — carve-and-transplant regions between host/donor configurations with automatic overlap scoring and boundary optimization.
 - **Geometric selection** — select atoms by sphere, cylinder, plane, cube, atom type, coordinates, percentage, or atom/molecule ID — all through a unified `region_mask()` dispatcher.
 - **Coordinate transforms** — symmetry operations and integer supercell transformations.
-- **EAM potential generation** — `eamGen` imports/exports EAM, FS and HE potentials,
-  fits selected spline corrections or supported analytic parameters to energy/force/stress references, and hands
-  reviewed candidates to potential testing. Includes a Pd–He–Ni starting workflow
-  and an agent skill. See [the eamGen manual](examples/eamgen_manual.md).
+- **Thermal lattice constants** — default pure-element NPT tests at 600, 700,
+  800, 900, 1000 and 1023 K, using Python-built 10 x 10 x 10 supercells.
+  The final 20,000 of 50,000 steps are averaged only when the convergence
+  screen passes. Alloy tests are opt-in. See the
+  [thermal-lattice-constant guide](examples/potential_testing_manual.md#finite-temperature-lattice-constants).
+- **Extended benchmarks (opt-in)** — surface energies, C15/SFT seeds,
+  reviewed dislocation-line tests, loop size scans, gas complexes in alloys,
+  molecular references, extended SEAKMC searches and LAMMPS NEB paths.
+  CPU preparation and backend-specific GPU launch settings are supported.
+  See [the extended benchmark guide](examples/extended_potential_testing.md).
+- **AI-human simulation workflows** — a bundled materials-simulation skill helps
+  an agent prepare structures, inputs, reviewed jobs, completion checks and summaries.
+  Includes guides for LAMMPS, SEAKMC, VASP, SPPARKS and MOOSE.
 
 ## Installation
 
@@ -31,8 +40,8 @@ See [INSTALL.md](INSTALL.md) for HPC setup, offline installation considerations,
 installation checks and agent-skill installation.
 
 ```bash
-gz-toolkit-eamgen --help
 gz-toolkit-potential-testing --help
+gz-toolkit-install-skill --help
 ```
 
 ### Dependencies
@@ -109,6 +118,7 @@ defect.add_111_loop(
     ff_elements=["Fe", "Fe"],
     atomic_masses=[55.845, 55.845],
     loop_type="sil",
+    n_layers=3,      # 3 (default): perfect b = 1/2<111> loop; 1: single faulted (111) plane
     n_repeats=1,
 )
 
@@ -176,33 +186,51 @@ gz_toolkit/
 │   └── fcc_defect.py         # FCCDefect: voids, loops and point defects
 ├── jobs/                     # SLURM job templates, directory + submission helpers
 ├── potential_testing/        # potential-testing pipeline (reference → defects → summary)
-├── eamGen/                   # EAM/FS/HE fitting, reference adapters and agent skill
+├── skills/                   # materials-simulation skill and local installer
 ├── analyze/                  # formation/binding energies and elastic formulas
 └── pot_infobank/             # validated potential metadata
 
 tests/                        # pytest suite
-examples/                     # usage scripts, eamGen manual and Pd–He–Ni starter files
+examples/                     # usage scripts and potential-testing manual
 ```
 
-## eamGen on the HPC
+## AI-human co-use
 
-Start with [the full eamGen manual](examples/eamgen_manual.md) and
-[the Pd–He–Ni starter files](examples/eamgen_pd_he_ni/README.md).
-The initial study retains the supplied Pd–He–H `eam/he` formulation, uses a
-Pd–Ni potential for reference data, and adds Ni–He DFT or suitable teacher
-references. Cross-potential composition is provisional and requires review.
+The skill is optional. Installing or importing the Python package never installs
+or activates it. An agent reading this project should check its available skills
+first, suggest installation if missing, and ask the user before installing it.
+See [AGENTS.md](AGENTS.md). A read-only check for Codex is:
 
-The workflow is: import/combine a baseline, prepare and label geometries,
-fit a fresh revision on the HPC, review its errors with the user, hand it to
-potential testing, and compare independent physical results with sourced targets.
-The package records inputs/provenance and provides standardized agent commands;
-the accompanying skill guides research and human decisions.
+```bash
+python -m gz_toolkit.skills --check
+```
 
-Current setfl support is `eam/alloy`, `eam/fs` and `eam/he`. Analytic forms are
-limited to the supplied paper's He terms, and composition currently requires an
-HE primary. Further generalization remains future work. No validated Pd–He–Ni
-potential is included. For this study, run all fitting/reference calculations on
-the HPC; examples and installation checks do not start them automatically.
+The check exits with code 0 when installed and 1 when missing; it creates no files.
+If you choose to install the bundled skill into Codex:
+
+```bash
+gz-toolkit-install-skill
+# Equivalent without the console command:
+python -m gz_toolkit.skills
+```
+
+The complete skill is copied to `$CODEX_HOME/skills/materials-simulation-skill`
+(default `~/.codex/skills/materials-simulation-skill`). It is available on the
+next Codex turn; invoke `$materials-simulation-skill` or describe a simulation
+task. Use `--dest /path/to/agent/skills` for another agent and `--force` to
+replace an existing installation. Installation does not launch simulations.
+
+The skill maintains a saved plan, reference structures and inputs, job previews,
+completion checks, and CSV summaries. Human decisions remain visible in the
+plan. Preparing jobs and submitting them are separate actions; existing user
+authorization is reused. Custom campaigns use `sim_plan.yaml` (install the
+`workflow` extra for PyYAML) or `sim_plan.json`. Potential-testing projects use
+the package's existing `pot_inputs/` layout and CLI.
+
+Read [the skill](gz_toolkit/skills/materials-simulation-skill/SKILL.md) and
+[its package integration guide](gz_toolkit/skills/materials-simulation-skill/references/gz-toolkit.md)
+for submission boundaries and remaining reliability limits. Instructions guide
+agent behavior; they do not change the package's status or failure handling.
 
 ## Running Tests
 
@@ -210,8 +238,6 @@ the HPC; examples and installation checks do not start them automatically.
 python -m pytest tests/ -v
 ```
 
-The eamGen tests include synthetic optimization. Run them on the HPC for this
-study. Installation/help checks in [INSTALL.md](INSTALL.md) do not perform fits.
 See [CHANGELOG.md](CHANGELOG.md) for release changes.
 
 ## License

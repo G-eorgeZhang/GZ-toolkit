@@ -1,83 +1,92 @@
-# Installing GZ-toolkit on an HPC
+# Installing GZ-toolkit and its simulation skill
 
-Release 0.2.0 includes `eamGen`, potential testing, and the existing structure
-tools. The Python package requires Python 3.9 or newer. Use the cluster's
-supported Python module and a virtual environment; the Windows environment
-configured on Zhang's computer is not portable to Linux.
+The package provides atomistic structure tools, HPC potential testing, and a
+materials-simulation skill for AI-human collaboration. It requires Python 3.9
+or newer. Use a Python environment on the machine where the work will run;
+a Windows virtual environment is not portable to Linux.
 
-## Install from your Git checkout
+## Python package
 
-Upload the repository, including `pyproject.toml`, `MANIFEST.in`, `gz_toolkit/`
-and `examples/`. On the HPC, load the appropriate Python module, then run:
+From a checkout containing `pyproject.toml`, `MANIFEST.in`, and `gz_toolkit/`:
 
 ```bash
-cd /path/to/GZ-toolkit
 python -m venv "$HOME/venvs/gz-toolkit"
 source "$HOME/venvs/gz-toolkit/bin/activate"
-python -m pip install --upgrade pip
 python -m pip install .
+# Development:
+python -m pip install -e ".[dev]"
+# YAML plans for the bundled workflow scripts:
+python -m pip install ".[workflow]"
 ```
 
-Installation resolves NumPy, pandas, SciPy, pymatgen and the `myLAMMPS` Git
-dependency automatically. Git and network access are required to fetch that
-dependency. For development, replace the final command with
-`python -m pip install -e ".[dev]"`. Keep a checkout for the example files.
+Dependencies include NumPy, pandas, SciPy, pymatgen and the `myLAMMPS` Git
+dependency. Git and network access are required to fetch it. On an offline
+cluster, prepare compatible dependency wheels on a connected Linux machine,
+install dependencies including `myLAMMPS`, then install the toolkit with
+`python -m pip install --no-deps /path/to/GZ-toolkit`.
 
-On clusters without network access, prepare Linux-compatible dependency wheels
-on a connected machine using the same Python version/platform. Install the
-dependency wheels first, including `myLAMMPS`, then install the toolkit with
-`python -m pip install --no-deps /path/to/GZ-toolkit`. The direct Git dependency
-cannot be fetched on an offline cluster; copying a Windows virtual environment
-will not work.
-
-## Check installation without calculations
+Check installation without launching calculations:
 
 ```bash
 python -m pip check
-gz-toolkit-eamgen --help
-python -m gz_toolkit.eamGen --help
 gz-toolkit-potential-testing --help
+python -m gz_toolkit.skills --help
 python -c 'import gz_toolkit; print(gz_toolkit.__version__)'
 ```
 
-These checks do not fit a potential or start reference calculations. If a console
-command is missing, activate the environment used for installation; the module
-form uses that environment's Python directly.
+LAMMPS, VASP, MPI, plugins and licensed VASP POTCAR files must be supplied
+separately. Use the site's actual modules, partitions, accounts and resources.
+The package does not supply simulation binaries or private potential files.
 
-## Configure external calculators
+## Install the skill for Codex
 
-LAMMPS, its required pair styles/plugins, VASP and MPI are separate cluster
-installations. This package supplies neither their binaries nor VASP POTCARs.
-Load the required modules in your batch jobs and verify that the LAMMPS build
-supports `eam/he` for the current Pd–He–Ni study. Provide licensed VASP inputs
-with matching POTCAR/POSCAR species order when using DFT references.
+This is optional and separate from Python package installation. Importing the
+package also never installs a skill. Agents should first inspect their available
+skills or run `python -m gz_toolkit.skills --check` (read-only; exit 1 if missing),
+then suggest installation and ask the user if it is missing. Existing explicit
+authorization to install does not need another confirmation.
 
-Read [the eamGen manual](examples/eamgen_manual.md) before preparing a fit.
-The [Pd–He–Ni example](examples/eamgen_pd_he_ni/README.md) describes the starter
-files. Edit account, partition, environment and resources in `fit_hpc.job`, and
-submit from an environment in which this package is installed:
+Run on the computer hosting Codex, in the environment containing GZ-toolkit:
 
 ```bash
-sbatch --export=ALL,EAMGEN_PROJECT=/absolute/path/pd_he_ni_fit,EAMGEN_REVISION=r001 examples/eamgen_pd_he_ni/fit_hpc.job
+gz-toolkit-install-skill
+# Equivalent:
+python -m gz_toolkit.skills
 ```
 
-Run this only after replacing the project's empty dataset with labelled,
-documented reference data and reviewing the fitting options. The example job
-performs fitting only; reference calculations and physical testing use separate
-jobs. All fitting and reference calculations for this study belong on the HPC.
+The destination is `$CODEX_HOME/skills/materials-simulation-skill`, or
+`~/.codex/skills/materials-simulation-skill` if CODEX_HOME is unset. The skill
+becomes available on the next Codex turn. Invoke `$materials-simulation-skill`
+to use it. Python package installation alone does not activate an agent skill.
 
-## Agent skill and release contents
+Pass `--dest /path/to/agent/skills` to choose another host's skills directory.
+The installer refuses to overwrite an existing skill unless you pass `--force`.
+It copies all guides, scripts and templates without executing them.
 
-The package ships `gz_toolkit/eamGen/skills/eamgen/SKILL.md` and its full manual.
-Copy the entire `eamgen` directory to your host agent's skill location if needed;
-Python installation does not install a skill globally. To locate the resources:
+Alternatively, copy the complete directory from a checkout:
 
-```bash
-python -c 'from importlib.resources import files; print(files("gz_toolkit.eamGen").joinpath("skills/eamgen"))'
+```text
+gz_toolkit/skills/materials-simulation-skill/
 ```
 
-Git checkouts and source distributions include `examples/`, this installation
-guide and the changelog. Wheels contain the executable package, testing/job
-templates, agent skill and its manual; keep the checkout/source distribution
-for the example JSON files and batch job. No supplied private potential file,
-paper, generated fit or reference dataset is bundled.
+For a ChatGPT host offering skill uploads, create a zip with that single folder
+at its root and use that host's upload interface. Installing a local Codex skill
+does not upload it to a separate ChatGPT account or remote workspace.
+
+## Using the package and skill together
+
+For potential testing, use the existing `pot_inputs/` project and CLI. For a
+custom campaign, save `sim_plan.yaml` or `sim_plan.json`, copy the skill's
+workflow helpers to the campaign's `workflow/`, and prepare inspectable files.
+Follow user-selected review checkpoints and reuse recorded decisions.
+Preparation does not authorize submission: the agent needs human authorization
+before launching the reviewed campaign. Degree 4's launcher includes downstream
+runtime submissions, so review those resources and job counts too.
+
+The [integration guide](gz_toolkit/skills/materials-simulation-skill/references/gz-toolkit.md)
+documents remaining status, submission-failure, configuration and reproducibility
+limits that the skill cannot repair in code.
+
+Git checkouts and source distributions include examples, tests, this guide and
+the changelog. Wheels contain the executable package, job/testing templates and
+the complete simulation skill. Keep a checkout for example scripts.
