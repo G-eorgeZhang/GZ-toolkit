@@ -1,0 +1,71 @@
+# sim_plan.yaml — the single source of truth for one simulation campaign.
+# Lives in the simulation ROOT (the folder the user connected). Every workflow script reads it.
+# Example below: He–vacancy cluster binding energy around a screw dislocation in BCC Fe.
+
+project: HeV_screw               # used as job-name prefix
+software: lammps                 # lammps | seakmc | vasp | spparks | moose | other
+
+environment:                     # step 0 — filled in by asking the user; never guessed
+  machine: ssh                   # local | ssh
+  host: zhang@cluster.example.edu   # only for ssh
+  os: linux                      # linux | windows | macos
+  python: /home/zhang/.venvs/sim/bin/python     # interpreter that runs ALL workflow scripts
+  python_kind: venv              # venv | conda | module
+  activate: "source /home/zhang/.venvs/sim/bin/activate"   # how to activate it in a shell / job
+  modules: []                    # e.g. [python/3.11, gcc/12.2]  (HPC module loads before python)
+  packages:                      # local packages that are not pip-installed -> sys.path
+    gz_toolkit: /home/zhang/codes/GZ_toolkit
+  scheduler: slurm               # slurm | none (local runs)
+
+tree:
+  levels:                        # level 1, 2, 3 ... (root is level 0)
+    - name: T                    # variable name -> available as {{T}} in templates
+      values: [300, 600, 900]
+      dirname: "T{value}K"       # directory name pattern
+    - name: cluster
+      values: [He1V1, He2V1, He3V1]
+      dirname: "{value}"
+    # values may depend on the parent dir:  values: {T300K: [a, b], T600K: [a]}
+  runs: 12                       # run1 ... run12  (here: 12 positions around the dislocation)
+  run_prefix: run
+
+constants:                       # extra {{KEY}} values shared by every run
+  A0: 2.8553
+  POT: Fe-He.eam.alloy
+
+seed_base: 0                     # {{SEED}} = deterministic hash of relpath + seed_base
+
+reffiles:
+  dir: reffiles
+  copy:  [Fe-He.eam.alloy]       # verbatim into each run dir (globs ok)
+  link:  []                      # symlinked instead (big files, never edited)
+  templates:                     # rendered with {{KEY}} substitution
+    - in.lammps
+    # - {src: in.lammps.tmpl, dst: in.lammps}
+  job: run.job                   # reference SLURM job file (may contain {{KEY}} too)
+  require: [structure.data]      # must already be in each run dir (written in step 1)
+
+structures:                      # step 1 bookkeeping — the reference chain, one change per stage
+  file: structure.data           # name of the final structure in each run dir
+  chain:
+    - {stage: 0, file: reffiles/ref0_perfect.data,  what: "perfect BCC Fe, x=[11-2] y=[111] z=[1-10]", checked: false}
+    - {stage: 1, file: reffiles/ref1_screw.data,    what: "+ 1/2[111] screw dislocation at box centre", checked: false}
+    - {stage: 2, file: "<run dir>/structure.data",  what: "+ HeV cluster at position {{RUN_INDEX}}", checked: false}
+
+job:
+  level: 2                       # parallelization level (here run level = 3 -> 3 is scatter)
+  pack: 1                        # runs at once inside an aggregated job (1 = serial cd/srun/cd)
+  name_prefix: HeVsc
+  time_per_run: "01:00:00"       # used to scale --time of aggregated jobs
+  time_margin: 0.1
+
+checks:                          # step "checker" — ASK the user for these
+  - {type: exists,       file: log.lammps}
+  - {type: contains,     file: log.lammps, pattern: "Total wall time"}
+  - {type: not_contains, file: log.lammps, pattern: "ERROR|Lost atoms"}
+
+summary:                         # step 4 — ASK the user what to extract
+  output: summary.csv
+  fields:
+    - {name: E_final, type: lammps_thermo, file: log.lammps, column: PotEng, which: last}
+    - {name: E_bind,  type: regex, file: log.lammps, pattern: "^Ebind\\s*=\\s*(\\S+)", which: last}

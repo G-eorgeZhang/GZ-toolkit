@@ -1,0 +1,18 @@
+#!/bin/bash
+# Reference job file — lives in reffiles/. Double-brace placeholders (e.g. JOBNAME) are filled per run.
+# Everything ABOVE the "# @RUN" line is the header (reused once for aggregated jobs);
+# everything BELOW is the per-run body (repeated with cd run_i / cd back for levels < run level).
+#SBATCH --job-name={{JOBNAME}}
+#SBATCH --output=slurm_%j.out
+#SBATCH --error=slurm_%j.err
+#SBATCH --partition=<partition>
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=32
+#SBATCH --time=01:00:00
+#SBATCH --account=<account>
+
+module purge
+module load lammps/<version>
+
+# @RUN
+srun lmp -in in.lammps -log log.lammps > lammps.out 2>&1

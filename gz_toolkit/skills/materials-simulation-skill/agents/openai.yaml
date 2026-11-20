@@ -1,0 +1,4 @@
+interface:
+  display_name: "Materials Simulation"
+  short_description: "Prepare and review materials simulations with GZ-toolkit"
+  default_prompt: "Use $materials-simulation-skill to prepare a materials simulation workflow with structures, reviewed jobs, completion checks, and summaries."
