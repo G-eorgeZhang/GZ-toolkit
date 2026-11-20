@@ -19,6 +19,11 @@ cd /path/to/your/hpc/workdir
 gz-toolkit-potential-testing init --root . --pot-name my_potential --interactive
 ```
 
+With `--interactive` it asks plain-language questions, including the
+potential type, its paper / DOI (plus GitHub and Matbench links for universal
+potentials) and `potinfo_savepath`. Leave a reference answer blank if you don't
+know it yet; `check` reminds you later.
+
 This scaffolds:
 
 ```
@@ -80,7 +85,7 @@ Every field below shows a real example value and what to watch out for.
 
 | Tag | Example | Notes |
 |---|---|---|
-| `pot_name` | `"my_potential"` | Must match the JSON filename and the `potentials/<pot_name>/` folder. |
+| `pot_name` | `"gao_FeHe_2011"` | Must match the JSON filename and the `potentials/<pot_name>/` folder. Full form is `<name>_<system>_<year>` (or `<name>_<system>_` with no year); a short name like `"gao2011"` is renamed automatically — see *Potential names* in Step 1. |
 | `pot_lines` | `"pair_style eam/fs\npair_coeff * * Fe.eam.fs Fe"` | **Multi-line tag.** In JSON this is one string with `\n` between LAMMPS lines — it gets written verbatim into `potential.inc` and `#include`d by every generated input script. For MEAM (2 pair_coeff-style lines) or hybrid potentials just add more `\n`-joined lines, e.g. `"pair_style hybrid/overlay eam/fs meam\npair_coeff * * eam/fs Fe.eam.fs Fe\npair_coeff * * meam library.meam Fe FeCr.meam Fe"`. |
 | `type_map` | `{"Fe": 1, "Cr": 2, "He": 3}` | Element symbol → LAMMPS atom-type id. Every element used anywhere else in the config (elements, gases, alloys) must appear here. |
 | `masses` | `{"1": 55.845, "2": 51.996, "3": 4.0026}` | Keys are the **atom-type ids as strings** (JSON object keys are always strings; loaded back as `int`), values are amu. Must have exactly one entry per `type_map` value. |
@@ -227,6 +232,11 @@ because they involve the filesystem:
   missing a potential file, or holding a stale copy that no longer matches
   the source under `potentials/<pot_name>/` (e.g. you edited the potential
   file after `main.py` already built the case dirs)
+* missing `reference` info (`paper`, `doi`; plus `github`, `matbench` for
+  `kind: "universal"`). When `potinfo_savepath` is on this is an error and the
+  message shows the exact `"reference": {...}` entry to add under `"potential"`;
+  with saving off it is only an `[info]` note. It does not stop `main.py` —
+  anything still missing is written as `TODO` in the pot_infobank README
 
 Equivalent CLI form: `gz-toolkit-potential-testing check --pot-inputs pot_inputs --run-dir .`
 
@@ -326,19 +336,29 @@ name `gao2011` also works), `list_potentials(infobank_dir)` and
 `pot_inputs/<pot>.json` and re-running `summarize-pot`.
 
 `<pot_name>.json` is deliberately minimal — just what you need to go from
-`pot="gao2011"` to an actual cell: `pot_name`, `type_map`, `masses`, and
-`lc` (lattice constant per element, plus any alloy composition built, keyed
-by its `<A><B>_<comp>` tag). For example:
+`pot="gao_FeHe_2011"` to an actual cell and run it: `pot_name`, `type_map`,
+`masses`, `lc` (lattice constant per element; alloy compositions under
+`lc["alloys"]`), `thermal_lc`, and the potential's own `kind`, `pot_lines`,
+`potential_files`, `crystal_structures` and `reference`. For example:
 
 ```json
 {
-  "pot_name": "gao2011",
+  "pot_name": "gao_FeHe_2011",
   "type_map": {"Fe": 1, "He": 2},
   "masses": {"1": 55.845, "2": 4.0026},
-  "lc": {"Fe": 2.8553, "FeCr_Fe95Cr5": 2.859},
+  "lc": {"Fe": 2.8553},
+  "thermal_lc": {},
+  "kind": "classical",
+  "pot_lines": "pair_style eam/fs\npair_coeff * * M07_eam.fs Fe He",
+  "potential_files": ["M07_eam.fs"],
+  "crystal_structures": {"Fe": {"structure": "bcc"}},
+  "reference": {"paper": "...", "doi": "10.xxxx/..."},
   "updated": "2026-07-10T00:09:03+00:00"
 }
 ```
+
+The copy saved in the pot_infobank (`pot_info.json`) also has
+`missing_info` and `source_project`.
 
 Everything else `_collect_pot_metrics` can produce — `Ecoh`, elastic
 constants (`C11`…`C66` + Voigt `B`/`G`/`E`/`nu`), point-defect formation
